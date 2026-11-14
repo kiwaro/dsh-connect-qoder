@@ -59,10 +59,9 @@ npx tsdown                                 # 通过
 
 ### 症状
 
-`pnpm test` 的唯一失败项为 `tests/shim.spec.ts` 里那条**自检**：
+`pnpm test` 的唯一失败项为 `tests/shim.spec.ts` 中的分类器代码样本一致性检查。检查结果显示，`classifyPiAiError` 从第 38 个字符起与当时本机已安装的 DSH 存在差异。以下为差异代码片段：
 
 ```
-classifyPiAiError 第 38 个字符起与装机DSH不一致：
 期望 "if (/\b(?:401|403)\b/.test(message)) return \"AUT"，
 实为 "const statusSource = LEADING_HTTP_STATUS.exec(me"
 ```

@@ -343,7 +343,7 @@ pnpm run fixture:pi-ai-modern     # = npm install --prefix tests/fixtures/pi-ai-
 ## 六、证据来源
 
 - DSH版本：`/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime/runtime.json` → `desktopVersion: 0.2.1-rc.1`
-- 装机 pi-ai：从 `app.asar` 按原始 offset 提取 `dist/models.js` / `dist/api/openai-completions.js` / `dist/utils/transcript.js` 逐字阅读（asar 内无 `package.json`，版本由 `dsh-llm-pi-ai` 的 `dependencies: {"@earendil-works/pi-ai": "^1.1.0"}` 界定）
+- DSH 安装包内的 pi-ai：从 `app.asar` 按原始偏移量提取 `dist/models.js` / `dist/api/openai-completions.js` / `dist/utils/transcript.js` 逐字阅读（asar 内无 `package.json`，版本由 `dsh-llm-pi-ai` 的 `dependencies: {"@earendil-works/pi-ai": "^1.1.0"}` 界定）
   - `dist/api/openai-completions.js` 里 `context.systemPrompt` / `context.tools` 出现次数均为 **0**
   - `dist/models.js` 的 `streamSimple` 第一行是 `const transcript = normalizeContext(context)`
 - DSH 端归一化调用点：`dsh-llm-pi-ai/lib/index.js:1763`（`models.setProvider(profile.piProvider)`）

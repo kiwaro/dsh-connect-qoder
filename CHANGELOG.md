@@ -9,7 +9,7 @@
 ### 修复
 
 - **更新测试使用的 DSH 失败分类器代码样本。**
-  - `tests/shim.spec.ts` 的代码样本一致性检查失败，提示 `classifyPiAiError 第 38 个字符起与装机DSH不一致`。
+  - `tests/shim.spec.ts` 的代码样本一致性检查失败，提示 `classifyPiAiError` 代码样本与当时本机已安装的 DSH 存在差异，差异从第 38 个字符开始。
   - DSH rc.2 新增 `const LEADING_HTTP_STATUS = /^[45]\d\d\b/`。分类器优先读取错误报文开头的 HTTP 状态码，避免将正文中引用的上游状态码用于本次错误分类；开头未匹配到状态码时，仍检查完整报文。例如，网关返回 500、正文引用上游 401 时，应按网关状态进行分类。
   - 插件此前已将独立出现的 401/403 改写为 `4xx`，并为非 auth 错误添加 `qoder upstream <kind> (http 4xx):` 前缀，因此新旧分类器对六个实测报文的分类结果一致：配额为 `QUOTA`、限流为 `RATE_LIMIT`、凭据被拒为 `AUTH`。逐项对比见升级调研文档第二节。
   - 手工更新代码样本时曾遗漏新增常量，执行 `new Function(...)` 抛出 `ReferenceError: LEADING_HTTP_STATUS is not defined`。
@@ -3430,7 +3430,7 @@ DSH升级到 **DSH Desktop 0.2.1-rc.1**，随之把 pi-ai 从 0.85 换到 **1.x*
 - **积分读数位置可选：输入框工具栏 / 输入框下方**（对齐 workbuddy issue #62，其 commit `f16b05f`）。
   - **根因不是插件冲突，而是席位语义**：`conversation.input.left`（输入框工具栏）是**共享的 list 插槽**——shell 自己的控件和任何其他 bundle 都注册在那里，而 **list 插槽无法保证每个占用者都可见**。
 
-    所以「另一个插件装进来，读数就没了」不是谁把谁挤掉的偶发，而是该席位结构上就不作保证。本插件此前只注册这一个席位，因而同样暴露。已用**装机运行时代码**核对（不是推断）：`dsh-client-ui-conversation/lib/client.js` 里两个席位都是 `{kind:"list", scope:"session"}`，且 `conversation.composer.dock` 的渲染条件是 `variant === "composer" && input !== undefined && sessionId !== undefined`。
+    其他插件注册后，积分读数可能因共享列表插槽的显示规则而消失。本插件此前仅注册该插槽，也受此规则影响。当时本机已安装的 DSH 运行时代码显示，`dsh-client-ui-conversation/lib/client.js` 中两个插槽的定义均为 `{kind:"list", scope:"session"}`，且 `conversation.composer.dock` 的渲染条件是 `variant === "composer" && input !== undefined && sessionId !== undefined`。
   - **新增设置 `regions.<region>.creditPosition = 'composer' | 'stats'`，默认 `composer`**：默认值取该设置存在之前**唯一**的席位，所以**升级不会移动屏幕上任何东西**（读盘走本地读取而非 schema 默认值，配置在此之前写下的也读作 `composer`）。用联合类型而非布尔：第三个席位是可预见的，`showAtTop: boolean` 只能迁移、不能扩展。
   - **两个席位都无条件注册，决定权收在 gate 一处**（席位不符即 `return null`）。反过来「按设置只注册被选中的席位」意味着每次改设置都要**重新注册插槽**，而本仓库已写明这种绑定是脆的（晚到的 settings 命名空间必须产生新注册而非改闭包）。
   - **`stats` 席位 = `conversation.composer.dock`**，`order: 10` 排在 shell 自己的轮次/tok/s/缓存命中统计（注册在 0）**之后**：自带统计仍在最左，读数是**追加**而不是顶替。
@@ -3441,7 +3441,7 @@ DSH升级到 **DSH Desktop 0.2.1-rc.1**，随之把 pi-ai 从 0.85 换到 **1.x*
     变异验证：删掉席位判定 → 2 例失败；读取端恒返回 `composer` → 4 例失败；默认值改成 `stats` → 1 例失败；卡片写错字段名 → 1 例失败；卡片读数硬编码 → 1 例失败。
 
     全量 581 通过 / 7 跳过。
-  - **未做（如实记录）**：没有实机核对运行中的插槽树 —— 该席位是否真的在 UI 上出现，需要 `pnpm run dev:web` 加页面刷新，本轮只验证了插槽名、`kind/scope` 与渲染条件（读的是装机产物），以及 gate/卡片的决策逻辑。
+  - **当次验证范围**：根据当时本机已安装的 DSH 文件核对插槽名、`kind/scope` 与渲染条件，并验证 gate 和卡片的判断逻辑。运行界面中的插槽显示情况仍待执行 `pnpm run dev:web` 并刷新页面后确认。
 
 ## 0.4.3 (2026-10-13)
 
