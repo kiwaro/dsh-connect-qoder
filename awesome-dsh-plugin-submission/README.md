@@ -4,12 +4,22 @@
 
 ## 当前状态
 
-- **正式提交**：✅ **已合并** → [PR #7229](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/7229) `Add dingminhua/dsh-connect-qoder (model)`，2026-10-12 16:54 UTC 开，**2026-10-17 07:57 UTC 由 fkysly 合并**，改动只有 `data/plugins/dingminhua__dsh-connect-qoder.yml` 一个文件（+6 行）。上游条目与 PR body 均已落地（`data/plugins/dingminhua__dsh-connect-qoder.yml` 存在、生成版 README 第 1726 行收录，与 `eghrhegpe/dsh-connect-qoder` 同表但实现路线不同）。
-- **历史（评审期，2026-10-12 → 10-17）**：CI `check` + `Submission gate` 持续 pass，`mergeable=MERGEABLE` / `mergeStateStatus=CLEAN`，0 评论、0 review——全绿排队。上游按批合并，队列里长期有 900+ 条开放投稿；近 500 条已合并样本的「创建 → 合并」中位数约 177 小时（7 天半）——本次约 5 天入列后被合。**评审期全程遵守「不重开 PR、不留言催评」**。
+- **正式提交**：✅ **已合并** → [PR #7229](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/7229) `Add dingminhua/dsh-connect-qoder (model)`，2026-10-12 16:54 UTC 开，**2026-10-17 07:57 UTC 由 fkysly 合并**，改动只有 `data/plugins/dingminhua__dsh-connect-qoder.yml` 一个文件（+6 行）。
+
+  上游条目与 PR body 均已合并（`data/plugins/dingminhua__dsh-connect-qoder.yml` 存在、生成版 README 第 1726 行收录，与 `eghrhegpe/dsh-connect-qoder` 同表但实现路线不同）。
+- **历史（评审期，2026-10-12 → 10-17）**：CI `check` + `Submission gate` 持续 pass，`mergeable=MERGEABLE` / `mergeStateStatus=CLEAN`，0 评论、0 review——全部通过排队。
+
+  上游按批合并，队列里长期有 900+ 条开放投稿；近 500 条已合并样本的「创建 → 合并」中位数约 177 小时（7 天半）——本次等待约 5 天后合并。
+
+  **评审期全程遵守「不重开 PR、不留言催评」**。
   - 复核提示：`mergeable` 偶发回报 `UNKNOWN`，那是 GitHub 在后台重算合并性，**不是**状态变坏；等几秒重查即回到 `MERGEABLE`（2026-10-17 实测一次）。
-- **条目 yml 与本地草稿逐字节一致**，无需改动：描述里不含数字，插件继续发版不影响条目准确性。PR body 只是自述，**停在 1.0.0 那次快照**（33 个 spec 文件 / 606 用例，其中 `live-intl-session.spec.ts` 是需要真实凭据的实机套件，无环境变量时整文件自跳）——按上面「不重开 PR、不留言催评」的约定，评审期间不再改动 PR 内容。
-- **版本沿革**：首发 `0.3.0`（2026-10-12）→ `0.4.x` / `0.5.x`（全部是修错与对齐同族）→ **`1.0.0`**（2026-10-17，标记稳定期）→ `1.1.x`（适配 DSH 0.2.1 线 + 账号池三项修复）→ **`1.2.0` / `1.2.1`**（2026-10-18，换号可见性、账号选择框搬进设置区、后台积分读走合流）。`0.5.2` 只存在于提交历史里、从未发布，发布前改号为 `1.0.0`（撤回 `v0.5.2` tag、以 `v1.0.0` 重打，历史提交不改写）。
-- **npm 包名**：`@dmh2002/dsh-connect-qoder`。**注意**：无作用域的 `dsh-connect-qoder` 已被他人占用（发布者 `gghskl`，仓库 `hdhgsysh/dsh-connect-qoder`，实为 `eghrhegpe` 那份「读本机登录」的实现，已在注册表内）。本项目是**另一条技术路线**（用户自备 PAT + cosy 网关），因此发布在作用域名下；仓库名与插件在 DSH 内的标识（settings 命名空间、`/plugins/dsh-connect-qoder/…` 路由、CLI 程序名）**不变**。
+- **条目 yml 与本地草稿逐字节一致**，无需改动：描述里不含数字，插件继续发版不影响条目准确性。PR body 记录提交时的功能说明，**停在 1.0.0 那次快照**（33 个 spec 文件 / 606 用例，其中 `live-intl-session.spec.ts` 是需要真实凭据的实机套件，无环境变量时整文件自跳）——按上面「不重开 PR、不留言催评」的约定，评审期间保持 PR 内容稳定。
+- **版本沿革**：首发 `0.3.0`（2026-10-12）→ `0.4.x` / `0.5.x`（全部是修错与对齐同族）→ **`1.0.0`**（2026-10-17，标记稳定期）→ `1.1.x`（适配 DSH 0.2.1 线 + 账号池三项修复）→ **`1.2.0` / `1.2.1`**（2026-10-18，换号可见性、账号选择框搬进设置区、后台积分读走合流）。
+
+  `0.5.2` 仅存在于提交历史，未发布，发布前改号为 `1.0.0`（撤回 `v0.5.2` tag、以 `v1.0.0` 重打，历史提交不改写）。
+- **npm 包名**：`@dmh2002/dsh-connect-qoder`。**注意**：无作用域的 `dsh-connect-qoder` 已被他人占用（发布者 `gghskl`，仓库 `hdhgsysh/dsh-connect-qoder`，实为 `eghrhegpe` 那份「读本机登录」的实现，已在注册表内）。
+
+  本项目是**另一条技术路线**（用户自备 PAT + cosy 网关），因此发布在作用域名下；仓库名与插件在 DSH 内的标识（settings 命名空间、`/plugins/dsh-connect-qoder/…` 路由、CLI 程序名）**不变**。
 - **前置要求**（依据 [contributing.md](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/contributing.md)）：
   - [x] 仓库 `package.json` 声明 `dsh.bundle` manifest（`dsh.bundle.patch: ./cordis.patch.yml`）
   - [x] 已发布到 npm（首发 `0.3.0`，映射由 registry 从包的 `repository` 字段自动采集，**条目里不要手写 `npm:` 键，会被校验拒绝**）
@@ -25,7 +35,7 @@
 - 多账号池（PAT vault）+ 一键签到 + 一键测试 + 自动换号；
 - 逐模型的上游思考档位与上下文档位选择，能力只按上游明确公布的给（未核实一律不预勾）。
 
-评审对重复条目的规则是「谁更好」而非先来后到；两条描述不同、实现路线不同——提 PR 时把这段差异写清楚即可。
+评审对重复条目的规则是以实现质量和功能差异为依据；两条描述不同、实现路线不同；提交时须说明实现差异。
 
 ## 收录目录规范
 
@@ -36,9 +46,9 @@
   - `category`：有效值之一（本项目为 `model`）
   - `description.en`：必填，一行，以句号结尾；含 `: ` 必须加引号
   - `description.zh`：可选，维护者会补
-- **描述必须属实**：它会被当作对插件的声明，与代码逐条核对（写「46 个工具」就得真有 46 个）。只说功能，不带最高级形容词与营销词——夸大是让好插件被打回的头号原因。
-- 硬性要求：`dsh.bundle` manifest（**只声明 `dsh.client` 会被直接打回**）、仓库有真实可用的代码、创建满 1 天、活跃维护、带 `dsh-plugin` topic。
-- 红线：纯聚合包不收（收插件不收 bundle）；依赖必须解析到原作者仓库或其 npm 包；PR 不得动别人的条目。
+- **描述必须属实**：它会被当作对插件的声明，与代码逐条核对（例如声明的工具数量须与实现一致）。只说功能，不带最高级形容词与营销词。
+- 硬性要求：`dsh.bundle` manifest（**只声明 `dsh.client` 会被拒绝**）、仓库有真实可用的代码、创建满 1 天、活跃维护、带 `dsh-plugin` topic。
+- 限制：纯聚合包不收（收插件不收 bundle）；依赖必须解析到原作者仓库或其 npm 包；PR 不得动别人的条目。
 - README（`README.md` / `README.zh.md`）由脚本生成，**不要手工编辑**；改 YAML 后执行：
   ```sh
   npm ci
@@ -51,4 +61,4 @@
 1. 修改本目录的 `dingminhua__dsh-connect-qoder.yml` 草稿
 2. 在 fork 分支上同步修改 `data/plugins/dingminhua__dsh-connect-qoder.yml`
 3. 重新生成 README（见上）
-4. 推送，PR 自动重跑 CI
+4. 推送，PR 自动重新执行 CI

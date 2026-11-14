@@ -1,38 +1,37 @@
 # DSH 0.2.2-rc.1 升级跟进调研 —— dsh-connect-qoder
 
 > 调研日期：2026-11-05
-> 宿主：DSH Desktop `0.2.2-rc.1`（`runtime/primary-runtime/runtime.json` → `desktopVersion`）
+> DSH：DSH Desktop `0.2.2-rc.1`（`runtime/primary-runtime/runtime.json` → `desktopVersion`）
 > 插件：`@dmh2002/dsh-connect-qoder` **1.17.5**（未改代码）
 > 上一轮：[`docs/DSH-0.2.1-RC1-FOLLOWUP.md`](DSH-0.2.1-RC1-FOLLOWUP.md)
 > 基线：本机 0.1.7 依赖树 `1221 passed / 8 skipped`；0.2.2 依赖树 `1216 passed / 5 failed / 8 skipped`
 
 ---
 
-## 零、结论摘要
+## 升级影响
 
-**结论：需要适配 —— 且已在 2026-11-05 同一轮内落地（见 §九）。** 与上一轮「0.2.1-rc.5 不需要任何运行时代码改动」不同，0.2.2-rc.1
-在插件**直接构造**的两个宿主对象上加了必填字段、给 pi-ai 的 api 加了品牌类型，
-因此 `pnpm run typecheck` 会红；另外 peer 范围在 npm 语义下**不覆盖** `0.2.2-rc.1`。
+**适配已于 2026-11-05 实施（见 §九）。** 与上一轮「0.2.1-rc.5 不需要任何运行时代码改动」不同，0.2.2-rc.1
+在插件**直接构造**的两个DSH对象上加了必填字段、给 pi-ai 的 api 加了品牌类型，
+因此 `pnpm run typecheck` 会失败；另外 peer 范围在 npm 语义下**不覆盖** `0.2.2-rc.1`。
 
-但**不是** 0.2.1 那种「静默丢工具」级别的运行时事故：真实宿主栈（pi-ai 1.3.0）上
-modern 直通路径实测**正常**，提示词与工具都在。
+真实DSH栈（pi-ai 1.3.0）上的 modern 分支直接传递上下文实测正常，请求中保留提示词与工具声明。
 
 | 层 | 结论 | 所需动作 |
 |---|---|---|
 | `ResolvedPiAiProviderProfile` 新增两个必填字段 | 🔴 typecheck 失败 + 运行时丢「单请求图片条数上限」 | **改代码**（P0-1） |
 | pi-ai 1.3.0 的 `TranscriptContext` 品牌类型 | 🔴 typecheck 失败（仅 legacy 分支） | **改代码**（P0-2） |
 | `ctx.locale.register` 签名加宽 | 🔴 客户端 typecheck 失败 | **改代码**（P0-3） |
-| peer 范围覆盖 `0.2.2-rc.1` | 🔴 npm/pnpm 语义判 false（宿主门禁判 true） | **改声明**（P1） |
-| 测试树仍钉 0.1.7 线 | 🟡 本轮「没测到真宿主」的根因；升线后 5 条用例必红 | **改测试**（P2） |
+| peer 范围覆盖 `0.2.2-rc.1` | 🔴 npm/pnpm 语义判 false（DSH兼容性检查判 true） | **改声明**（P1） |
+| 测试依赖仍固定在 0.1.7 线 | 🟡 本轮「尚未验证实际DSH」的根因；升线后 5 条用例必然失败 | **改测试**（P2） |
 | 中途 system 消息改写成 user reminder | 🟡 行为相对 0.2.1 变了，不报错 | 需实测后决定（P3-1） |
-| 宿主默认窗口/输出上限改值 | 🟢 插件逐模型显式给值，预计无影响 | 确认即可 |
+| DSH默认窗口/输出上限改值 | 🟢 插件逐模型显式给值，预计无影响 | 确认即可 |
 | `llm/models-updated` / `settings.section.icon` / 6 种新语言 | 🟢 新能力，非必需 | 可选增强 |
 
 ---
 
-## 一、实测环境（先钉事实）
+## 一、实测环境
 
-宿主 `app.asar` 内 `/dsh/node_modules` 的实际版本：
+DSH `app.asar` 内 `/dsh/node_modules` 的实际版本：
 
 | 包 | 0.2.1-rc.5 | **0.2.2-rc.1（本机）** |
 |---|---|---|
@@ -41,10 +40,9 @@ modern 直通路径实测**正常**，提示词与工具都在。
 | `@deepseek-ai/cordis` | 4.0.x（peer `~4.0.5`） | **4.1.0**（peer `~4.1.0`） |
 | `@deepseek-ai/schemastery` | 3.18.5 | **3.19.0** |
 
-插件的**开发树**仍钉在 0.1.7 线（`pnpm-workspace.yaml` overrides：`dsh-* 0.1.7-rc.1`、
+插件的**开发树**仍固定在 0.1.7 线（`pnpm-workspace.yaml` overrides：`dsh-* 0.1.7-rc.1`、
 `cordis 4.0.2`、`schemastery 3.18.4`、`pi-ai 0.85.1`）。这意味着 1.17.5 的
-`pnpm run typecheck` / `pnpm test` **从未对着 0.2.2 的声明跑过** —— 本轮所有
-破坏都是这样漏出来的。
+`pnpm run typecheck` / `pnpm test` **从未对着 0.2.2 的声明执行过** —— 本轮类型不兼容项因此未被原有检查发现。
 
 复现方法（不污染主仓）：
 
@@ -73,7 +71,7 @@ src/adapter.ts(506,9): error TS2739:
   maxRequestImages, imageOffloadCountQuantum
 ```
 
-宿主 0.2.2 在 `dsh-llm-pi-ai` 里新增了「**单请求图片条数上限**」（对齐 Azure OpenAI
+DSH 0.2.2 在 `dsh-llm-pi-ai` 里新增了「**单请求图片条数上限**」（对齐 Azure OpenAI
 的 50 张），并在 `resolveProfile` 里默认化：
 
 ```js
@@ -84,16 +82,16 @@ const imageOffloadCountQuantum = source.imageOffloadCountQuantum ?? Math.min(10,
 
 **运行时后果**：`PiAiAdapter` 直接读 `profile.maxRequestImages`（`lib/index.js:2018`），
 插件传的是 `undefined` → 该路由**静默失去**条数上界，只保留原有的
-`maxRequestImageBytes`（20MB）。宿主自己的路由有 50 张的界，Qoder 路由没有。
+`maxRequestImageBytes`（20MB）。DSH 的路由有 50 张的界，Qoder 路由没有。
 
-**修法**：在 profile 里显式补两个字段，与宿主默认对齐：
+**修法**：在 profile 里显式补两个字段，与DSH默认对齐：
 
 ```ts
 maxRequestImages: 50,
 imageOffloadCountQuantum: 10,   // = min(10, 50)
 ```
 
-（若 Qoder 网关实测能吃更多图，再按实测值上调；但**不要**留空。）
+（若实测 Qoder 网关支持更多图片，再按实测值上调；但**不要**留空。）
 
 ### P0-2 · pi-ai 1.3.0 给 api 上下文加了品牌类型
 
@@ -109,11 +107,11 @@ pi-ai 从 1.3.0 起把 `api.stream/streamSimple` 的入参声明为品牌化的
 `TranscriptContext`（规范化后的 transcript），这与插件自己在 1.1.x 时实测出的
 「1.x 的 api 只读 messages」结论一致 —— 品牌类型只是把它写进了类型系统。
 
-**影响面**：**只有 legacy 分支**。宿主 0.2.2 跑 pi-ai 1.3.0，
+**影响面**：**只有 legacy 分支**。DSH 0.2.2 跑 pi-ai 1.3.0，
 `generationOf()` 判 `modern`，`withLegacyContext` 直接透传，
 **不经过** `adaptLegacyPiAiContext`。所以这是纯编译期问题。
 
-**修法**：在 legacy 分支内做一次收窄/断言（保留 0.1.7 宿主支持），
+**修法**：在 legacy 分支内做一次限定/断言（保留 0.1.7 DSH支持），
 并在注释里写明「这是 0.85 世代的回填，1.3.0 的 api 不接受非品牌 transcript」。
 不要为了过编译把 modern 分支改成折叠（那是 0.2.1 已论证过的错误方向）。
 
@@ -134,7 +132,7 @@ src/client/index.tsx(55,53): error TS2345:
 于是要求字典对象带 string 索引签名；插件 `src/client/locales.ts:879` 的
 `QoderLocale` 是固定 `{ zh, en }` 接口，没有索引签名。
 
-**运行时不受影响**（JS 不做该检查，两种语言的字典照常注册、英文兜底），
+**运行时不受影响**（JS 不做该检查，两种语言字典照常注册，缺少语言时回退至英文），
 是**类型面**破坏。
 
 **修法**：给 `QoderLocale` 加索引签名，或用 `satisfies` 保留字面量类型再行断言；
@@ -150,15 +148,15 @@ src/client/index.tsx(55,53): error TS2345:
 >=0.1.7-rc.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0 || >=0.2.1-rc.1 <0.3.0-0
 ```
 
-实测两套语义（node-semver 直跑）：
+实测两套语义（直接运行 node-semver）：
 
-| 版本 | 标准语义（npm/pnpm 安装） | 宿主门禁（`includePrerelease: true`） |
+| 版本 | 标准语义（npm/pnpm 安装） | DSH兼容性检查（`includePrerelease: true`） |
 |---|---|---|
 | `0.2.1-rc.5` | true | true |
 | **`0.2.2-rc.1`** | **false** ❌ | true |
 | `0.2.2`（GA） | true | true |
 
-即：**宿主的兼容门禁会放行，但 `pnpm add` / npm 安装会判不兼容**。
+即：**DSH的兼容性检查会放行，但 `pnpm add` / npm 安装会判不兼容**。
 这正是 `tests/dsh-line.spec.ts:117` 那份 `UNGATED_PRERELEASES` 待办表列出的
 `0.2.2-rc.1` —— 表里早就写着它待补，只是还没补。
 
@@ -169,37 +167,37 @@ src/client/index.tsx(55,53): error TS2345:
 ```
 
 同步三处：`package.json` 的 `peerDependencies` / `devDependencies`、
-README「受支持的宿主范围」表（`README.md:310` / `README.en.md`）、
+README「受支持的DSH范围」表（`README.md:310` / `README.en.md`）、
 `tests/dsh-line.spec.ts` 的 `DECLARED_RANGE` 与 `UNGATED_PRERELEASES`。
 
 > 注意：`pi-ai` 那一行的 `>=1.0.0 <2.0.0` **已覆盖 1.3.0**，不用改。
 
 ---
 
-## 四、P2：测试树要一起升线，否则「验证不到真宿主」
+## 四、P2：测试树要一起升线，否则「验证不到实际DSH」
 
 把 overrides 升到 0.2.2 线后，全量用例从 `1221 passed / 8 skipped`
 变成 **`1216 passed / 5 failed / 8 skipped`**（3 个文件）：
 
 | 失败用例 | 原因 | 性质 |
 |---|---|---|
-| `tests/adapter-outgoing-body.spec.ts` ×3（legacy 世代） | 用例强制 `piAiGeneration: 'legacy'`，却跑在 pi-ai **1.3.0** 的 api 上；1.3.0 只读 `messages`，顶层 `tools` 必丢 | 用例前提失效 |
+| `tests/adapter-outgoing-body.spec.ts` ×3（legacy 世代） | 用例强制 `piAiGeneration: 'legacy'`，却运行于 pi-ai **1.3.0** 的 api 上；1.3.0 只读 `messages`，顶层 `tools` 必丢 | 用例前提失效 |
 | `tests/pi-ai-runtime.spec.ts:115` | 硬编码 `expect(info.version).toMatch(/^0\.(8[5-7])\.\d+/)`，实测拿到 `1.3.0` | 版本 pin |
-| `tests/fixtures/pi-ai-modern/modern-outgoing-body.spec.ts` | fixture 的 `package.json` 钉 `1.1.0`，断言「钉的就是 1.1.0」 | 版本 pin |
+| `tests/fixtures/pi-ai-modern/modern-outgoing-body.spec.ts` | 独立测试环境的 `package.json` 固定为 `1.1.0`，断言「验证的就是 1.1.0」 | 版本 pin |
 
-**关键结论**：把 fixture 升到 1.3.0 后，modern 直通那 4 条**全绿**
-（`modern 直通：提示词与工具都出门`、`幂等`、`legacy 在 1.x 上会静默丢` 等），
+**关键结论**：将独立测试环境中的 pi-ai 升至 1.3.0 后，modern 直通那 4 条**全部通过**
+（覆盖 modern 分支的提示词与工具传递、重复处理后仍仅有一条 system 消息，以及 legacy 分支在 1.x 上的字段丢失），
 只有「版本 pin 断言」那条红。也就是说 **0.2.2 的真实运行时路径没有回归**。
 
 建议：
 
-- legacy-only 那三条按「已装 pi-ai 世代」门控（`skipIf(generationOf(installed) !== 'legacy')`），
-  而不是删掉 —— 0.1.7 宿主仍要这条护栏；
+- legacy-only 那三条根据已安装的 pi-ai 版本决定是否执行（`skipIf(generationOf(installed) !== 'legacy')`），
+  而不是删掉 —— 0.1.7 DSH仍要这条自动化检查；
 - `pi-ai-runtime.spec.ts` 的版本正则改成按世代断言，不再写死 0.85；
-- `tests/fixtures/pi-ai-modern` 从 1.1.0 升到 **1.3.0**（与宿主同代），
+- `tests/fixtures/pi-ai-modern` 从 1.1.0 升到 **1.3.0**（与DSH同代），
   注释里「与 followup 文档同一个版本」随之更新；
-- 主树是否整体升到 0.2.2，是个取舍：升了 CI 才对着真宿主跑，但会丢 0.1.7 的直接覆盖
-  （可用 fixture 补）。**建议升主树** —— 本轮的问题恰恰是主树停在 0.1.7 才没被发现。
+- 主树是否整体升到 0.2.2，是个取舍：升了 CI 才对着实际DSH跑，但会丢 0.1.7 的直接覆盖
+  （可用独立测试环境补充验证）。**建议升主树** —— 本轮的问题恰恰是主树停在 0.1.7 才没被发现。
 
 ---
 
@@ -207,20 +205,18 @@ README「受支持的宿主范围」表（`README.md:310` / `README.en.md`）、
 
 ### P3-1 · 中途 system 消息默认改成 user 味的 `<system-reminder>`
 
-0.2.2 的 `toPiContext` 新增 `supportsMidConvoSystemMessages` 形参，从
-`PreparedAdapterCall.updates.systemPromptUpdate === 'in-history'` 推出；
-为 false 时，把对话**中途**的 system 文本包成 user 角色的
-`<system-reminder>…</system-reminder>`（并转义闭合标签）。0.2.1 是**无条件**以
-system 角色发送。
+0.2.2 的 `toPiContext` 新增 `supportsMidConvoSystemMessages` 形参，从 `PreparedAdapterCall.updates.systemPromptUpdate === 'in-history'` 推出； 为 false 时，把对话**中途**的 system 文本包成 user 角色的 `<system-reminder>…</system-reminder>`（并转义闭合标签）。
+
+0.2.1 是**无条件**以 system 角色发送。
 
 插件的 `buildModels()` 只声明了 `compat: { supportsReasoningEffort, supportsDeveloperRole: false }`，
 没声明 `supportsMidConvoSystemMessages` → 取默认 false → **Qoder 路由的
 中途 system 行为相对 0.2.1 变了**（这在共享历史 / 中途注入提示的场景才会显出差异）。
 
 **动作**：实测 Qoder 网关是否接受中途 system 角色；接受就显式声明，
-不接受就保持现状（默认的 reminder 其实更安全），并把结论写进注释。
+不接受就保持现状（默认 reminder 保持DSH既有处理方式），并把结论写进注释。
 
-### P3-2 · 宿主默认值改了两个常数
+### P3-2 · DSH默认值改了两个常数
 
 `DEFAULT_CONTEXT_WINDOW` 262144 → **1000000**，`DEFAULT_MAX_TOKENS` 32768 → **128000**。
 只影响**没有显式给值**的路由。插件在 `src/adapter.ts:191` 逐模型用上游实测的
@@ -241,7 +237,7 @@ system 角色发送。
 |---|---|---|
 | `llm/models-updated` 事件 | 「某路由的模型目录/显示元数据变了，消费者重读 `listModels()`」 | **中**：插件目录是动态的（换号、上游刷新、启用/禁用），目前从不通知，选择器可能显示旧列表 |
 | `settings.section.icon` 槽位 | 设置左侧导航可为分区注册图标 | **已采用**（1.18.0）：设置页注册了自己的 LD 品牌标，id 与页面一致（不一致会静默退回默认齿轮） |
-| locale 新增 6 语言 | `de/es/fr/ja/pt/ru` | **低**：不补也合法（英文兜底），补的话落点就是 P0-3 那一处 |
+| locale 新增 6 语言 | `de/es/fr/ja/pt/ru` | **低**：不补也合法（英文回退），补的话落点就是 P0-3 那一处 |
 | `llm-pi-ai/request-headers` waterfall | 推理调用前统一改请求头（**不含**模型发现） | **无**：插件的 loopback shim 自己造头；将来若要区分「推理 vs 发现」再考虑 |
 | `WebResource` 路由 | `webServer.register` 可注册 Fetch 资源 | **无**：插件的 HTTP 路由仍是 handler 形态，类型兼容 |
 
@@ -249,46 +245,45 @@ system 角色发送。
 
 ## 七、不需要改的部分（明确排除）
 
-- **modern 直通路径**：真实 pi-ai 1.3.0 上提示词与工具都在，`generationOf(1.3.0) → modern` 正确。
+- **modern 分支直接传递上下文**：真实 pi-ai 1.3.0 上提示词与工具都在，`generationOf(1.3.0) → modern` 正确。
 - **cordis 4.1.0**：`LoggerLevel` 的 `INFO/WARN` 数值对调、`notify()` 返回值变化等都在
   插件不碰的内部面上；插件只用 `ctx.effect` / `ctx.on` / `logger.warn|error`（非数值等级）。
 - **`dsh-attachment` / `dsh-settings` / `dsh-atomic-write` / `dsh-home-paths`**：导出面未变。
 - **`DirectoryRegistrationHandle` / `registerConfigurableProviders`**：签名与语义未变。
 - **`dsh-host-webserver`**：`index-inject` 多了 `peer` 参数、新增 `WebResourceRoute`，
   插件既不监听该事件也不注册资源路由，类型兼容。
-- **插件用到的槽位**（`conversation.input.model.label` / `conversation.input.right` /
-  `conversation.composer.dock` / `settings.section` / `settings.section.icon`）：契约未变。
-  （本文写于 1.18.0 之前，当时配置入口还是 `plugins.bundle.config` /
-  `plugins.row.config` 两个 keyed 槽；1.18.0 起已改为设置页分区，那两个槽不再注册。）
+- **插件用到的槽位**（`conversation.input.model.label` / `conversation.input.right` / `conversation.composer.dock` / `settings.section` / `settings.section.icon`）：接口约定保持兼容。
+
+  （本文写于 1.18.0 之前，当时配置入口还是 `plugins.bundle.config` / `plugins.row.config` 两个 keyed 槽；1.18.0 起已改为设置页分区，那两个槽不再注册。）
 
 ---
 
-## 八、建议的落地顺序
+## 八、建议的实施顺序
 
-1. **P0-1 + P0-2 + P0-3**：三处编译修复（约 10 行），先让 `typecheck` 在 0.2.2 树上绿；
-2. **P2**：主树 overrides 升 0.2.2、fixture 升 1.3.0、legacy 用例按世代门控，让 `test` 绿；
+1. **P0-1 + P0-2 + P0-3**：三处编译修复（约 10 行），先使 0.2.2 依赖环境下的 `typecheck` 通过；
+2. **P2**：主树 overrides 升 0.2.2、独立测试环境中的 pi-ai 升至 1.3.0、legacy 用例按版本选择处理方式，让 `test` 绿；
 3. **P1**：peer 加 `>=0.2.2-rc.1` 分支，同步 README 与 `dsh-line.spec.ts`；
 4. **P3-1**：实测 Qoder 的中途 system 行为后决定是否声明能力；
 5. 发版时把本文档加进 `package.json` 的 `files`（与 `DSH-0.2.1-RC1-FOLLOWUP.md` 并列）。
 
 ---
 
-## 九、落地记录（2026-11-05，版本 1.17.5 未改号）
+## 九、实施记录（2026-11-05，版本 1.17.5 未改号）
 
 ### 9.1 代码
 
 | 项 | 改动 | 位置 |
 |---|---|---|
-| P0-1 | `REQUEST_IMAGE_BUDGETS` 补 `maxRequestImages: 50` / `imageOffloadCountQuantum: 10`，并在注释里写明「插件手工拼 profile，宿主的 `?? 50` 默认化不会跑，漏了不报错只是静默无上界」 | `src/adapter.ts:78` |
-| P0-2 | 新增 `ApiContext` / `legacyContextOf()`，把两次断言收敛到一处并注明「这是世代边界，1.3.0 宿主走不到」 | `src/adapter.ts`（`withLegacyContext` 旁） |
+| P0-1 | `REQUEST_IMAGE_BUDGETS` 补 `maxRequestImages: 50` / `imageOffloadCountQuantum: 10`，并在注释里写明「插件手工拼 profile，DSH的 `?? 50` 默认化不会跑，漏了不报错只是静默无上界」 | `src/adapter.ts:78` |
+| P0-2 | 新增 `ApiContext` / `legacyContextOf()`，将两次类型断言集中到版本兼容函数中，并注明 DSH 使用 pi-ai 1.3.0 时不会执行该分支 | `src/adapter.ts`（`withLegacyContext` 旁） |
 | P0-3 | `QoderLocale` 加 string 索引签名，注释说明它不降低 `zh`/`en` 的键校验 | `src/client/locales.ts:891` |
-| P3-1 | `compat.supportsMidConvoSystemMessages` **显式写 false**，把「跟随宿主默认」变成写下来的决定（附可改回 true 的条件） | `src/adapter.ts`（`toPiModel`） |
+| P3-1 | `compat.supportsMidConvoSystemMessages` **显式写 false**，把「跟随DSH默认」变成写下来的决定（附可改回 true 的条件） | `src/adapter.ts`（`toPiModel`） |
 
 ### 9.2 声明与文档
 
 - `package.json`：26 处 dsh-* peer/dev 范围追加 `|| >=0.2.2-rc.1 <0.3.0-0`；
   `files` 收入本文档。
-- `README.md` / `README.en.md`：范围表更新；「当前宿主基线」整节换成 0.2.2-rc.1 的实测结论
+- `README.md` / `README.en.md`：范围表更新；「当前 DSH基线」整节换成 0.2.2-rc.1 的实测结论
   （0.2.1-rc.4/rc.5 的逐条核查不再冒充「当前」）。
 - `tests/dsh-line.spec.ts`：`DECLARED_RANGE` 加第四支；`0.2.2-rc.1` 从
   `UNGATED_PRERELEASES` 移入 `ADMITTED_PRERELEASES`（余下待办为 `0.2.3-rc.1` / `0.2.9-rc.1`）。
@@ -302,10 +297,10 @@ system 角色发送。
 ### 9.4 测试
 
 - `tests/pi-ai-runtime.spec.ts`：版本断言从写死 `/^0\.(8[5-7])\.\d+/` 改成
-  「落在声明的 pi-ai peer 范围里」（宿主换线时该改的是钉版，不是这条判据）。
-- `tests/fixtures/pi-ai-modern`：钉版 1.1.0 → **1.3.0**（与宿主同代）；「钉了什么」的断言
+  「落在声明的 pi-ai peer 范围里」（DSH换线时该改的是固定版本，不是这条判据）。
+- `tests/fixtures/pi-ai-modern`：固定版本 1.1.0 → **1.3.0**（与DSH同代）；「固定版本内容」的断言
   改为「是确切版本 + `generationOf` 判 modern + 主版本是 1」，不再写死字符串。
-- `tests/adapter-outgoing-body.spec.ts`：legacy 组按**已装世代**门控
+- `tests/adapter-outgoing-body.spec.ts`：legacy 组根据**已安装的 pi-ai 版本**决定是否执行
   （`describe.skipIf(INSTALLED_GENERATION !== 'legacy')`），跳过时用例名里带原因。
 
 ### 9.5 结果
@@ -320,9 +315,9 @@ system 角色发送。
 ### 9.6 仍然悬着的两件事
 
 1. **legacy 分支没有活的覆盖**：主树迁到 1.3.0 后，`adapter-outgoing-body.spec.ts`
-   整份跳过。要恢复覆盖，需要像 modern 那样再立一份 **0.85.1 fixture**，
+   整份跳过。要恢复覆盖，需要像 modern 那样再立一份 **pi-ai 0.85.1 独立测试环境**，
    并给 `createQoderAdapter` 开一个注入 api 的缝（当前它自己 `openAICompletionsApi()`）。
-   0.1.7 宿主线仍在 peer 范围里，所以这是真缺口，不是洁癖。
+   0.1.7 DSH 版本系列仍在 peer 范围里，所以这是真缺口，不是洁癖。
 2. **中途 system 消息没有对着真网关验证过**：现在取的是保守侧（改写成
    `<system-reminder>`）。若实测 Qoder 接受中途 system 角色，把
-   `supportsMidConvoSystemMessages` 改成 `true` 即可，无需改别处。
+   `supportsMidConvoSystemMessages` 改成 `true` 即可，无需修改其他位置。

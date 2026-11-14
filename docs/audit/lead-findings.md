@@ -17,7 +17,7 @@ CHANGELOG 判断「国际版已接通」冲突，而**两边都不是完全错�
 
 - 代码层：cn / global 两个区域确实是**同一套代码按 region 分发**，没有
   「global 分支待实现」的空壳。上一轮 commit `7b3f4fb` 的说法在**代码结构**上成立。
-- 运行层：国际版**从未真正跑过**。
+- 运行层：国际版**从未真正执行过**。
 
 证据（命令 + 输出）：
 
@@ -35,7 +35,7 @@ $ ls -la ~/.dsh/.qoder-*
 
 **这解释了用户「国际版还没完成」的直觉是准确的**：用户看到的是国际版 tab
 里空空如也、点了也没有真实反馈。而代码审计（只看代码）会得出「已经对称」的
-相反结论。**两者都对，区别在于「代码写完」不等于「跑通」。**
+相反结论。代码结构检查与实际运行验证须分别记录。
 
 ---
 
@@ -46,9 +46,9 @@ $ ls -la ~/.dsh/.qoder-*
 ### 现象
 
 `requiresDeviceRisk` 在 global 为 `true`（`src/upstream.ts:117`），语义是
-「该区域的 sash 请求必须带 `Cosy-MachineToken/Code/Type` 三件套」。
+「该区域的 sash 请求必须带 三个设备风控请求头 `Cosy-MachineToken`、`Cosy-MachineCode` 和 `Cosy-MachineType`」。
 
-但该配置**只被一个函数消费**：
+但该配置**只被一个函数读取**：
 
 | 函数 | 行号 | 服务的端点 | 是否附加 device risk |
 | --- | --- | --- | --- |
@@ -74,9 +74,9 @@ global  sash url: https://openapi.qoder.sh/sash/api/v2/me/usage
 global 的用量请求只带 `accept` + `authorization`，**零个** machine 头 —— 尽管
 `QODER_REGIONS.global.requiresDeviceRisk === true`。
 
-### 无法证实的一半（诚实标注）
+### 影响程度待验证
 
-我用假 bearer 直接打真实端点，**带不带风控头返回完全相同的错误**：
+使用假 bearer 请求实际端点，**带不带风控头返回完全相同的错误**：
 
 ```bash
 # 不带风控头
@@ -91,7 +91,7 @@ HTTP 401 {"code":"TOKEN_EXPIRE","message":"token is not active"}
 ⇒ 严格表述：**「代码不一致」已实测证实；「会导致国际版积分读不出来」仅能从
 设计意图推断，需真实国际版 PAT 才能定论。**
 
-之所以仍建议修：这是同一个 `requiresDeviceRisk` 契约下的**契约违背**——
+之所以仍建议修：这是同一个 `requiresDeviceRisk` 接口约定下的**实现与接口约定不一致**——
 要么 global 的用量确实需要头（则该修），要么用量确实不需要头（那么 campaigns
 的注释与实现应说明为什么只有签到需要）。**当前「签到要、用量不要」这个分化，
 在代码和注释里都没有任何依据**，属于无意的遗漏而非有意的设计。
@@ -118,18 +118,16 @@ $ grep -n "fetchUsage" tests/device-risk.spec.ts
 
 ### 建议修法
 
-把 device risk 头的附加下沉到 `jobTokenGet()` 与 `fetchUsageDirect()`，
-或抽出统一的 `sashHeaders()` 供三处共用，使 `requiresDeviceRisk` 对所有
-sash 端点一致生效。修完需要一条回归测试：**断言 region=global 时
-usage 请求确实带上了三个 Cosy-Machine* 头**（现有测试只断言了
-`readDeviceRisk()` 本身能读、以及区域配置值，**没有**断言 usage 路径的头）。
+把 device risk 头的附加下沉到 `jobTokenGet()` 与 `fetchUsageDirect()`， 或抽出统一的 `sashHeaders()` 供三处共用，使 `requiresDeviceRisk` 对所有 sash 端点一致生效。
+
+修完需要一条回归测试：**断言 region=global 时 usage 请求确实带上了三个 Cosy-Machine* 头**（现有测试只断言了 `readDeviceRisk()` 本身能读、以及区域配置值，**没有**断言 usage 路径的头）。
 
 ---
 
-## 发现 2【已核查 · 对称，非缺口】：`checkinSupported: () => true` 的错误路径可接受
+## 发现 2【已核查 · 对称，属于预期实现】：`checkinSupported: () => true` 的错误路径可接受
 
 `src/index.ts:949` 把 `checkinSupported` 改成恒 `true`（两个区域都显示签到 UI）。
-我核查了「本机取不到 UMID 组件时 global 签到会怎样」，结论是**不会静默失败**：
+已核查本机缺少 UMID 组件时 global 签到的错误处理，结论是**不会静默失败**：
 
 - `runCheckinBatch()`（`src/index.ts:711`）逐账号 `try/catch`（第 737-739 行），
   异常被转成 `{ status: 'failed', message: <原始错误> }` 的行。
@@ -153,7 +151,7 @@ $ /Applications/Qoder.app/Contents/Resources/umid/runtime-info
 
 ---
 
-## 发现 3【已核查 · 对称，非缺口】：locale 字典零漂移
+## 发现 3【已核查 · 对称，属于预期实现】：中英文翻译键完全一致
 
 任务书怀疑「global 复用了 CN 专属措辞」。实测**不存在**这个问题：
 
@@ -179,7 +177,7 @@ global 侧有独立的 `row.tabGlobal` = 「国际版」/「Global」与
 
 ---
 
-## 发现 4【已核查 · 对称，非缺口】：vault / pool 路径按区域正确参数化
+## 发现 4【已核查 · 对称，属于预期实现】：vault / pool 路径按区域正确参数化
 
 ```ts
 // src/accounts.ts:81
@@ -195,7 +193,7 @@ export function qoderPoolStorePath(region: QoderRegion): string { /* .qoder-pool
 
 ---
 
-## 发现 5【已核查 · 对称，非缺口】：两区域请求形状正确
+## 发现 5【已核查 · 对称，属于预期实现】：两区域请求形状正确
 
 注入 fetch 拦截，确认两个区域的 client 各自打到正确的网关：
 
@@ -213,7 +211,7 @@ export function qoderPoolStorePath(region: QoderRegion): string { /* .qoder-pool
 | `gateway.qoder.com.cn/algo/api/v2/model/list` | 403 | 存活（拒绝未认证） |
 | `api1.qoder.sh/algo/api/v2/model/list` | 403 | 存活 |
 | `openapi.qoder.sh/sash/api/v1/me/campaigns` | 401 `TOKEN_INVALID / missing authorization token` | **存在**（不是 404） |
-| 两区域 `fetchCampaigns()` 全链路 | 401 `personal token is invalid` | 协议正确（假 PAT 应得此结果） |
+| 两区域 `fetchCampaigns()` 完整请求过程 | 401 `personal token is invalid` | 协议正确（假 PAT 应得此结果） |
 
 device-risk 组件读取与 client 级真实调用均正常。
 
@@ -221,7 +219,7 @@ device-risk 组件读取与 client 级真实调用均正常。
 
 ## 发现 6【文档与代码不一致 · 已实测排除功能影响】：global 的 host 分工注释是陈旧的
 
-**严重度：仅整洁（文档误导，不影响功能）**
+**严重度：命名与可读性（文档误导，不影响功能）**
 
 `src/upstream.ts` 文件头注释（第 8-17 行）声称国际版**三个端点分属三个 host**：
 
@@ -266,13 +264,13 @@ center.qoder.sh  -> 401 jobToken 交换失败: HTTP 401 personal token is invali
 | --- | --- | --- | --- | --- |
 | 0 | 国际版从未被执行（无 global vault/pool） | 运行状态 | **阻断性上下文** | 已实测证实 |
 | 1 | usage/积分路径漏发 global 设备风控头 | **代码不对称** | 影响体验 | 已实测证实（不一致本身）；影响程度待真 PAT |
-| 2 | `checkinSupported` 恒 true 的错误路径 | 非缺口 | — | 已核查 |
-| 3 | locale 零漂移 | 非缺口 | — | 已实测证实 |
-| 4 | vault/pool 路径参数化 | 非缺口 | — | 已核查 |
-| 5 | 两区域请求形状 | 非缺口 | — | 已实测证实 |
-| 6 | upstream 头注释的 global host 分工与实现矛盾 | 文档不一致 | 仅整洁 | 已实测证实（三 host 等效） |
+| 2 | `checkinSupported` 恒 true 的错误路径 | 属于预期实现 | — | 已核查 |
+| 3 | 中英文翻译键完全一致 | 属于预期实现 | — | 已实测证实 |
+| 4 | vault/pool 路径参数化 | 属于预期实现 | — | 已核查 |
+| 5 | 两区域请求形状 | 属于预期实现 | — | 已实测证实 |
+| 6 | upstream 头注释的 global host 分工与实现矛盾 | 文档不一致 | 命名与可读性 | 已实测证实（三 host 等效） |
 
 **核心结论：代码的「对称性」远好于预期（只有发现 1 一处真实代码不对称），但
-「国际版从未跑过」才是用户感受到的「没完成」的真正来源。** 因此修复工作应是
+「国际版从未执行过」才是用户感受到的「没完成」的真正来源。** 因此修复工作应是
 「修掉发现 1 + 修正发现 6 的注释 + 补一条真实国际版 PAT 的端到端验证」，
 而不是重写国际版。

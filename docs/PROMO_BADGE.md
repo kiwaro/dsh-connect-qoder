@@ -1,15 +1,12 @@
 # 活动优惠徽标：取证与判定
 
-模型行上那枚「错峰 4 折」小胶囊。一句话：**上游在模型目录里就给了这枚徽标的文案、
-时段和规则，插件只负责「此刻该不该画」和「画在哪」。**
+活动徽标的文案、时段与规则来自上游模型目录。插件在渲染时判断状态，并在模型名旁展示。
 
-## 1. 数据在哪：同一次目录请求，不新增任何请求
+## 1. 数据来源
 
-`/algo/api/v2/model/list?Encode=1` 的每个模型行自带一个 `promotion` 对象。插件本来就
-为了取目录读这份文档，所以这次改动**没有新增一次上游请求**，只是多了一个解析器
-（`src/promo.ts`）和一个渲染时刻的判定。
+`/algo/api/v2/model/list?Encode=1` 的模型行包含 `promotion` 对象。插件在既有目录请求中读取，通过 `src/promo.ts` 解析并计算显示状态。
 
-2026-10-21 16:2x 本机实测（真凭据、只读 GET、不消耗积分）：
+2026-10-21 16:2x 本机实测（有效凭据、只读 GET、不消耗积分）：
 
 | 区域 | 主机 | 去重后模型数 | 带 `promotion` 的行 |
 | --- | --- | --- | --- |
@@ -18,9 +15,8 @@
 | 国际（插件读的 `chat` 分组） | 同上 | 13 | 3（`ultimate`、`qmodel_38max`、`qmodel`） |
 
 两个区域是**同一套 schema**，只有时区和文案不同：国内 `Asia/Shanghai`，「错峰 4 折」；
-国际 `Asia/Singapore`，「错峰2折」/`Off-Peak 80% off`。注意上游自己写的也不统一——国内
-`qmodel_38max` 是「错峰 4 折」（有空格），`qmodel` 是「错峰4折」（没空格）。插件原样
-显示，不做「统一格式」。
+国际 `Asia/Singapore`，「错峰2折」/`Off-Peak 80% off`。国内文案存在格式差异：
+`qmodel_38max` 是「错峰 4 折」（有空格），`qmodel` 是「错峰4折」（没空格）。插件保留上游原文。
 
 ## 2. 逐字抓包（国内 `qmodel_38max`）
 
@@ -47,82 +43,43 @@
 国际区同一条规则换成了 `discount_factor: 0.2` / `before_promotion_price_factor: 2`，
 `timezone: "Asia/Singapore"`，`link_url` 指向 `https://docs.qoder.com/events/offpeakrate`。
 
-字段三组：**给人看的**（`badge`、`description`）、**规则**（`active`、`rule_id`、
+字段三组：**展示字段**（`badge`、`description`）、**规则**（`active`、`rule_id`、
 `discount_factor`、`window_start/end`、`timezone`）、**跳转**（`link_url`）。
 
 ## 3. 判定规则（`src/promo.ts`）
 
-1. **只认有文案的规则。** `badge.zh` 与 `badge.en` 都没有 → 一律丢弃。没有可显示的话，
-   插件没有可画的东西，也不自己编。
-2. **有窗口就看窗口，没有窗口才看 `active`。** 有 `window_start/end` 时，结论只由
-   「此刻在不在窗口内」决定（渲染时刻现算）；没声明窗口时才退回上游的 `active`。
-   为什么不是「两者都成立」（理由见 §3.1）。
-3. **没有窗口声明时只信 `active`。** 上游哪天给了个不带时段的常驻活动，这条路径直接可用；
-   `active` 为 false 时整枚不画——没有窗口就没有「几点生效」可说。
-4. **时段按上游声明的时区算**（`timezone`），不是浏览器时区：`22:00–08:00` 说的是那条
-   记录的时区里的 22:00。起点含、终点不含；跨零点命中 `[22:00, 24:00) ∪ [0, 08:00)`；
-   终点允许写 `24:00`（= 当天结束）；`start === end` 视为全天；**声明了窗口但读不懂**
-   （越界、只给一端、`HH:MM` 以外的写法）一律不画——不当作全天，也不退回去信 `active`。
-5. **一个模型只画一枚徽标**，落在模型名**旁边**而不是名字里面——名字是省略号截断的，
-   放进去会被一起裁掉。与倍率、free 标记、测试结论并列，顺序是「倍率 → 徽标」。
-   窗口外的那枚灰显（§3.3），位置与文案不变。
-6. **文案、悬停都只说上游的话。** 胶囊文字取 `badge.zh`（中文界面）/ `badge.en`；
-   悬停取 `description`，再补上「时段 + 时区」与 `link_url` 原文。插件不翻译、不改写、
-   不从 `discount_factor` 反推「4 折」这类数字（那三个数字字段因此在解析时就被丢掉，
-   不随目录落盘）。
+1. **文案要求**：`badge.zh` 或 `badge.en` 至少有一项有效，缺少文案时省略规则。
+2. **状态计算**：有 `window_start/end` 时，按渲染时刻判断是否处于窗口内；缺少窗口声明时使用上游 `active`。
+3. **无窗口的规则**：`active: true` 时显示，`false` 时省略。此类规则缺少可计算的生效时刻。
+4. **时区与有效时段**：使用上游 `timezone`，起点包含、终点不含。跨零点窗口按 `[22:00, 24:00) ∪ [0, 08:00)` 判断；终点接受 `24:00`，`start === end` 视为全天。时间越界、缺少一端或格式不符时省略规则。
+5. **显示位置**：每个模型一枚徽标，位于模型名之外、倍率之后，与 free 标记及测试结果并列。窗口外采用灰显状态（§3.3）。
+6. **文案与悬停**：按界面语言读取 `badge.zh/en`；悬停组合 `description`、时段、时区及 `link_url` 原文。折扣数字直接使用上游文案；`discount_factor` 等三个数值字段在解析时省略，存储对象保留展示和判定所需字段。
 
-### 3.1 为什么「有窗口时窗口说了算」
+### 3.1 时段优先于目录快照状态
 
-`active` 是上游**在取目录那一刻**算出来的，而目录是 DSH 进程启动时取的一份内存快照，
-之后只有点「刷新模型」才会换。把它当成必过的门，会有一个方向永远错：
+`active` 表示请求目录时的状态。目录在进程启动或手动刷新时读取，因此可能跨越多个活动时段：白天读取的 `active:false` 到夜间仍保留原值；夜间读取的 `active:true` 到白天也可能保留。
 
-- **窗口开了而进程没重启**：早上启动的进程拿着 07:00 的 `active: true`，到 22:00 窗口
-  重新开启时它仍是同一份快照——徽标该出现却不会出现，对一个整天开着 DSH 的用户，这个
-  功能等于不存在。
-- **窗口关了而 `active` 还是 true**（昨夜取的快照）：这方向窗口能纠正。
+`window_start/end` 与 `timezone` 是上游声明的时段，可结合当前时钟重新计算。插件因此优先使用时段，缺少时段时回退至 `active`。
 
-窗口不是插件的猜测，它是**上游自己声明的时段**（`window_start/end` + `timezone`），
-按那一刻的时钟重算，不会因为快照旧而说错话。所以：有窗口时它是唯一依据，`active`
-只在没有窗口可算时兜底。
+上游提前取消活动时，本地仍可能显示徽标至下一次目录刷新，限制见 §7。用户可执行“刷新模型”更新规则。
 
-代价写在 §7：上游若**提前结束**一个活动，插件在窗口内仍会画到下次刷新为止。这比反过来
-（活动开着却整天不显示）轻，而且用户可以点「刷新模型」立刻纠正。
+### 3.2 渲染时计算活动状态
 
-### 3.2 为什么判定必须在渲染时刻
+`promotion` 随 `lastCatalog` 保存规则。若解析时就固定显示结果，23:00 读取的活动状态会在次日 09:00 继续保留。当前实现保存 `QoderPromotion`，在渲染时结合 `new Date()` 调用 `promoDisplayAt` / `promoLiveAt`。WorkBuddy 的 `selectPromoBadge` 与 Trae 的 `selectTraePromoBadge` 采用相同方式。
 
-`promotion` 会随 `lastCatalog` 一起落盘。**若在解析时就挑定「画 / 不画」，夜里读到的
-目录会把它冻结到第二天早上**：23:00 拉到的快照判定为「在窗口内」，到早上 9:00 还挂着
-这枚过期的「错峰 4 折」。
+### 3.3 窗口外的灰显状态
 
-所以解析层只保留**规则**（`QoderPromotion`，不带任何「已判定」的痕迹），卡片每次渲染
-拿 `new Date()` 现算（`promoDisplayAt` / `promoLiveAt`）。这与 workbuddy
-（`selectPromoBadge`）、Trae（`selectTraePromoBadge`）三处是同一个取舍。
+2026-10-23 用户于 14:5x 打开卡片，`Qwen3.8-Max` 未显示活动徽标，而目录中已有 `qmodel_38max` 的 `22:00–08:00 Asia/Shanghai` 规则，`active:false`。旧实现只展示生效中的活动，无法向窗口外访问的用户说明后续优惠。
 
-### 3.3 窗口外画成灰的，而不是不画
+`promoDisplayAt` 返回以下三种状态：
 
-2026-10-23 用户实拍：14:5x 打开卡片，`Qwen3.8-Max` 行上什么都没有——而它的规则、文案、
-窗口在目录里全都齐（实探：`qmodel_38max`，`22:00–08:00 Asia/Shanghai`，`active: false`）。
-当时的实现只在「此刻成立」时画，于是**白天看不见这件事本身成了信息缺口**：一个只在
-晚上用 DSH 的人能看到折扣，一个白天打开卡片的人完全不知道有这回事。
-
-现在的三态（`promoDisplayAt`）：
-
-| 结论 | 条件 | 画法 |
+| 状态 | 条件 | 展示 |
 | --- | --- | --- |
-| `live` | 此刻在窗口内（或没有窗口而 `active` 为 true） | 实心胶囊，品牌色 |
-| `pending` | 声明了**读得懂**的窗口，但此刻不在窗口内 | 灰显胶囊：tertiary 灰 + 中性底 + **虚线**描边 |
-| `none` | 没有规则 / 窗口读不懂 / 没有窗口而 `active` 为 false | 不画 |
+| `live` | 当前在窗口内，或无窗口且 `active:true` | 实心品牌色徽标 |
+| `pending` | 窗口有效，当前在窗口外 | 灰色文字、中性底色、虚线描边 |
+| `none` | 无规则、窗口无效，或无窗口且 `active:false` | 省略徽标 |
 
-两处刻意的选择：
-
-- **灰显不是只降透明度。** 两种状态挂着同一句上游文案（「错峰 4 折」），只靠颜色深浅
-  区分会被读成「现在就在打折」。所以同时换掉颜色、底色与描边**形状**——虚线是形状
-  差异，不依赖颜色，色觉障碍与高对比度主题下仍然成立。
-- **悬停必须说清状态。** `pending` 的 title 前置一句 `row.promoPending`（「当前未生效，
-  22:00 起生效」），再接上游的 `description` / 时段 / 链接。信息一条不少，只多一句状态。
-
-`none` 里那两条不能进 `pending`：读不懂的窗口给不出「几点生效」（说一个猜的时间比不说
-更糟），没有窗口的常驻活动同理。
+`pending` 同时改变颜色、底色和描边形状，便于在色觉差异及高对比主题下区分状态。悬停先显示 `row.promoPending`（“当前未生效，22:00 起生效”），再显示上游说明、时段和链接。无效窗口无法给出可信的生效时间，因此保持 `none`。
 
 ## 4. 与另两个插件的能力对照
 
@@ -136,12 +93,11 @@
 | 服务端「此刻生效」标志 | 无 | `current.discount_type` | `active` |
 | 额外请求 / 换客户端身份 | 需要（`/v3/config` 按通道下发） | 不需要 | **不需要** |
 
-Qoder 是三者里唯一「文案自带 + 不需要换身份 + 不需要额外请求」的：最省事，也最贴近
-「徽标只说上游的话」。
+在上述版本对照中，Qoder 的文案和规则来自既有目录请求，可直接按上游原文展示。
 
 ## 5. 实机复核
 
-`scripts/probe-promo.mjs` 用真凭据、cosy 签名（与客户端同一条路径）读一次目录，然后跑
+`scripts/probe-promo.mjs` 用有效凭据、cosy 签名（与客户端同一条路径）读一次目录，然后跑
 **插件的解析与判定**（`parseUpstreamModel` → `parseQoderPromotion` → `promoLiveAt`）：
 
 ```
@@ -161,100 +117,70 @@ parsed models: 11   carrying a rule: 2
 +36h (21:23Z = 05:23 第三天):         qmodel_38max「错峰 4 折」, qmodel「错峰4折」
 ```
 
-两条规则都被正确读出（时段、时区、中文文案）。此刻 17:23（窗口外）**一枚都不画**，
-把时钟推进窗口（+6h = 23:23）两枚都出现，推回白天（+24h）又消失——**同一份解析结果**，
-结论只随「现在几点」变，这正是 §3.2 要的。注意 `active` 一直是 `false`：它停在取目录
-那一刻，插件不拿它去否决窗口（§3.1），窗口逻辑由 `tests/promo.spec.ts` 用固定时刻锁住。
+两条规则的时段、时区和中文文案均解析成功。同一份解析结果在 17:23（窗口外）显示零枚徽标，在 +6h（23:23）显示两枚，在 +24h（次日 17:23）再次显示零枚。
 
-### 5.1 窗口内真机复跑（2026-10-21 22:2x）
+这组模拟验证了 §3.2 的渲染时刻判断。解析结果中的 `active` 始终为 `false`，保留取目录时的状态；存在窗口规则时，插件依据时段判断。`tests/promo.spec.ts` 使用固定时刻覆盖该行为。
 
-上面的时钟平移是模拟。窗口真开之后又跑了一次**真实时钟**的复核，两件事同时得到确认：
+### 5.1 窗口内实机复核（2026-10-21 22:2x）
 
-1. **`active` 确实按当前时刻算，且窗口内会翻真。** 22:2x 宿主的 `/usage` 投影里，
+上面的时钟平移是模拟。活动窗口开启后，使用真实时钟再次复核，结果如下：
+
+1. **`active` 确实按当前时刻计算，在窗口内为 true。** 22:2x DSH 的 `/usage` 响应中，
    `qmodel_38max` 与 `qmodel` 的 `promotion.active` 都已是 `true`（16:2x 同一批规则是
-   `false`）。所以 §3.1 的担忧不是「上游永远不给 true」，而是**这个 true 只在取目录那
+   `false`）。所以 §3.1 的担忧不是「上游始终不给 true」，而是**这个 true 只在取目录那
    一刻有效**——白天取到的 `false` 不会因为到了夜里就自己变。
-2. **两枚徽标在真实时钟下真的画出来了。** 用宿主 `/usage` 的真实返回喂卡片组件渲染
+2. **真实时钟下显示两枚徽标。** 用DSH `/usage` 的真实返回传给卡片组件渲染
    （数据、组件、CSS 都是生产代码），`Qwen3.8-Max (0.20x)` 旁出现「错峰 4 折」、
    `Qwen3.7-Plus (0.10x)` 旁出现「错峰4折」，位置在名字之外、倍率之后。截图存为
    `docs/assets/dsh-connect-qoder-promo-badge.png`（README 双语引用、`screenshots.json`
    登记）。
 
-> 这张图是**窗口内真机数据 + 真实组件渲染**截的，不是摆拍：`promotion` 取自运行中宿主的
+> 截图使用窗口内的实机数据与生产组件渲染：`promotion` 取自运行中DSH的
 > `/usage`，启用状态、倍率、上下文都来自同一份真实目录。
 
-顺带确认：`quest-ultimate` / `experts-ultimate` 只出现在 `quest` / `experts` 分组里，
+同时确认：`quest-ultimate` / `experts-ultimate` 只出现在 `quest` / `experts` 分组里，
 而插件目录只读 `chat`，所以国际区实际能画的是 `chat` 分组里的三条：`ultimate`、
 `qmodel_38max`、`qmodel`（同上命令换成 `QODER_ACCOUNT_EXAMPLE` 即可复核）。
 
-## 6. 落地位置
+## 6. 实现位置
 
 | 位置 | 作用 |
 | --- | --- |
 | `src/promo.ts` `parseQoderPromotion` | 上游 snake_case → `QoderPromotion` |
-| `src/promo.ts` `readPromotion` | 落盘形状 → `QoderPromotion`（读回不另写一套解析） |
+| `src/promo.ts` `readPromotion` | 从文件读取活动数据，使用同一解析函数生成 `QoderPromotion` |
 | `src/promo.ts` `clockMinute` / `parsePromoWindow` | `HH:MM` → 分钟数（终点接受 `24:00`） |
 | `src/promo.ts` `promoWithinWindow` | 按上游时区判时段（跨零点、起点含终点不含） |
-| `src/promo.ts` `promoLiveAt` | 渲染时刻的「此刻画不画」 |
+| `src/promo.ts` `promoLiveAt` | 渲染时刻的「当前时刻是否显示」 |
 | `src/catalog.ts` `QoderModelInfo.promotion` | 目录条目带规则（`parseUpstreamModel` 里解析） |
 | `src/index.ts` `modelConfig.promotion` | `lastCatalog` 持久化 schema（`z.any<QoderPromotion>()`） |
-| `src/status-paths.ts` `QoderWebModel` / `QoderPersistedModel` | 投影给卡片的模型行类型 |
-| `src/web-status.ts` `webModelOf` | 投影时原样带出（对象展开，运行期无需改） |
-| `src/client/promo-badge.ts` `hostLanguage` / `promoBadgeLabel` / `promoBadgeTooltip` | 选中文/英文文案、拼悬停 |
-| `src/client/QoderCard.tsx` `renderModels` | 模型行渲染（名旁一枚胶囊） |
+| `src/status-paths.ts` `QoderWebModel` / `QoderPersistedModel` | 传给卡片的模型行数据类型 |
+| `src/web-status.ts` `webModelOf` | 构建卡片数据时，通过对象展开保留活动字段 |
+| `src/client/promo-badge.ts` `hostLanguage` / `promoBadgeLabel` / `promoBadgeTooltip` | 选择中文或英文文案，生成悬停提示文本 |
+| `src/client/QoderCard.tsx` `renderModels` | 在模型名旁渲染活动徽标 |
 | `src/model-badge.ts` `modelBadgeOf` | 选择器胶囊的**数据侧**：此刻该挂哪一枚（`live` 才挂）、文案表、16 grapheme 上限 |
-| `src/adapter.ts` `listModels` | 把胶囊挂进 `LlmModelInfo.badge`（展开写法，0.1.x 也能编译） |
+| `src/adapter.ts` `listModels` | 将徽标数据写入 `LlmModelInfo.badge`（展开写法，0.1.x 也能编译） |
 | `src/client/QoderModelLabel.tsx` `createQoderModelLabel` | 选择器里的同一枚胶囊（issue #12；工厂按 fiber 捕获槽位表，非本插件 provider 委托回账本下一位） |
-| `src/client/host-badge.tsx` `ForeignModelLabel` | 别家 provider 的行：名字 + 该模型自带的 `model.badge`（trigger 在前、菜单在后） |
-| `src/client/index.tsx` `registerModelLabel` | `conversation.input.model.label` 注册（`priority: -101`；single 槽同优先级会抛，升序只渲染最低者 ⇒ 实测赢家是 workbuddy 的 `-105`，本组件不渲染，胶囊靠 `listModels()` 的数据通道） |
-| `src/client/styles.ts` `.dsm-qoder-model-promo` / `.dsm-qoder-model-label-host-badge` | 本插件自己的胶囊 / 别家行上复现宿主 `Tag` 的几何 |
-| `scripts/probe-promo.mjs` | 真机只读探针（解析 + 判定 + 时钟平移） |
+| `src/client/host-badge.tsx` `ForeignModelLabel` | 其他 provider 的行：名字 + 该模型自带的 `model.badge`（trigger 在前、菜单在后） |
+| `src/client/index.tsx` `registerModelLabel` | `conversation.input.model.label` 注册：keyed DSH按 provider 分别注册；旧 single DSH使用 `priority: -101`，由优先级决定渲染项；0.2.2 DSH的默认渲染包含模型名与目录徽标 |
+| `src/client/styles.ts` `.dsm-qoder-model-promo` / `.dsm-qoder-model-label-host-badge` | 本插件自己的胶囊 / 其他 provider 行上复现DSH `Tag` 的几何 |
+| `scripts/probe-promo.mjs` | 实机只读探针（解析 + 判定 + 时钟平移） |
 
-## 7. 已知限制
+## 7. 已知限制与DSH兼容
 
-- **`link_url` 不可点**：胶囊只是提示。卡片里放一个可点外链，会把「用户以为自己要
-  去开通什么」变成一次误点，这一版不做。
-- **没有颜色**：上游只给文案，所以配色是插件自选的品牌蓝（与倍率标签同一色系）。
-- **上游提前结束活动时，徽标会多挂一会儿**：见 §3.1。有窗口时窗口说了算，所以活动被
-  临时取消 / 提前收尾时，插件要等到下次刷新目录（点「刷新模型」或重启）才知道。反向
-  的错（活动开着却整天不显示）更糟，所以选这一边。
-- **不判断账号资格**：`active` 里可能混着「你的账号不符合资格」这一层意思，但走窗口
-  分支后插件看不到它。§5.1 在窗口内实测到的 `true` 说明至少这批账号是符合的；若上游
-  将来只给「符合资格才 active」的常驻活动（没有窗口），那条路径仍然读 `active`，是对的。
-- **分组里看不到的活动**：`quest` / `experts` 分组的模型不进入插件目录，它们的徽标
-  自然也不会出现。这是目录范围的既有事实，不是本功能的选择。
-- **到点变化最多慢一拍**：卡片靠自动刷新轮询（`pollMinutes` 配置，默认 5 分钟；
-  1.22.0 之前是写死的 60 秒）触发重渲染，判定也在
-  那次渲染里重算，所以 22:00 开启、08:00 结束最迟各差一分钟。不另加定时器：为一个
-  提示性胶囊多挂一个每秒的计时器不值得。
-- **选择器里的数据可能比卡片旧至多一分钟**：标签组件读 `detail=fast` 文档（不触发
-  上游重读，只答本地已有状态），行数据按区域共享缓存（同一个 `pollMinutes` 节奏）；窗口边界的翻面靠
-  共享分钟时器重读时钟，不依赖新数据到达。徽标本身仍是渲染时刻现算（与卡片同规）。
-- **选择器里的胶囊是目录数据，不是实时状态**：`LlmModelInfo.badge` 随模型目录一起刷新，
-  所以窗口关掉之后那枚胶囊会挂到下一次目录刷新为止（卡片与本插件自己的行不受影响，
-  它们按分钟重算）。要做到分钟级准确得在每次翻面时发 `llm/models-updated`，而宿主收到
-  它会对**每个模型**调一次 `resolveModelInfo()` —— 代价不成比例。文案上限是 16 个
-  grapheme、超了整枚不画（不截断），理由见 `src/model-badge.ts` 文件头。
-- **single 槽的跨插件耦合**：`conversation.input.model.label` 只渲染第一条注册。
-  实测优先级 workbuddy `-105` / trae `-102` / 本插件 `-101`：**赢家是 workbuddy**，
-  本插件注册成功但从不渲染，所以「委托」只在它真的赢了那格时才有意义。
-  一旦赢下，就必须把非本插件的 provider **委托**回账本里的下一位
-  （workbuddy 的标签），否则对方的倍率后缀与忙闲图标会一起消失。**委托不出去时**
-  的退路是「名字 + 该模型自带的 `model.badge`」（`src/client/host-badge.tsx`），
-  不再是裸名字——0.2.2 宿主的 fallback 就是这个形状，只画名字等于把别家挂在目录里的
-  胶囊一起抹掉。若对方将来也开始委托，理论上存在互委托环 —— 宿主的错误边界会把
-  抛错的 entry 一次性弃权（下一帧换幸存者渲染），不会死循环。
-- **委托必须带上「对方自己命名空间的 `t`」**（issue #23 的教训，此处此前写错过）：
-  这段曾断言「当前生态（workbuddy、1017 参考实现）都是终点型组件」，**这条断言是
-  错的**。宿主内置的 `DeepSeekModelLabel`（`locale: deepseek-model-label-1017`）
-  会**无条件**调用 `t("badge.label")`；它平时正常，是因为宿主框架按它注册时声明的
-  `locale` 把 `t` 注进了 kit —— 而我们绕过框架直接 `jsx(Other, …)` 时没有这个机会。
-  结果：`TypeError: t is not a function`，宿主边界把**整片** label 槽弃权，触发按钮 /
-  菜单当前值 / 每个列表行一起变成裸名字，用户侧零信号。
-  现在的做法：按 `entry.locale` 用 `ctx.locale.bind(ns)` 替对方绑一个 `t`；绑定不出来
-  （没有 locale 面 / 命名空间未注册）就**不委托**、落回裸名字。**不要**转发我们自己的
-  `t`——那会把 `settings.qoder` 的字典当成对方的字典用，对方的 key 查不到就回落成
-  字面键名画在界面上。
-  一般化判据：**只要同槽存在任何声明了 `locale` 的组件，无条件委托就必崩**，与是哪家
-  插件无关。
-- **不 bump 版本、不改 `CHANGELOG.md`**：按 `RELEASING.md` §4，那是发版时维护者的动作。
+- **活动链接**：`link_url` 作为悬停文本展示，卡片徽标采用提示形式。
+- **颜色**：上游提供文案，徽标颜色由插件选用品牌蓝，与倍率标签保持一致。
+- **提前取消活动**：有窗口时按本地时钟计算，上游取消或提前结束活动后，需刷新目录才能取得新规则。
+- **账号资格**：窗口判断仅依据时段；若上游通过 `active` 表达账号资格，该信息在窗口分支中不会单独参与判断。无窗口活动直接使用 `active`。§5.1 实测账号在窗口内取得 `active:true`。
+- **目录范围**：插件读取 `chat` 分组；`quest` / `experts` 专属模型及活动保留在对应上游分组。
+- **卡片刷新间隔**：重新渲染时计算活动状态，自动更新受 `pollMinutes` 控制，默认 5 分钟；1.22.0 前固定为 60 秒。因此仅靠自动轮询时，窗口切换的显示延迟通常最多为一个刷新间隔，另受请求与页面调度影响。
+- **标签组件数据缓存**：读取 `detail=fast` 返回的本地缓存数据，按区域共享缓存并采用 `pollMinutes` 刷新。共享分钟定时器重新读取时钟，计算窗口切换；规则变更仍须取得新目录。
+- **目录徽标更新**：`LlmModelInfo.badge` 随模型目录刷新。通过该字段显示的徽标会保留至下一次目录更新；本插件标签组件另按当前时钟计算。每次发 `llm/models-updated` 会让DSH逐模型调用 `resolveModelInfo()`，当前实现因此未为提示性徽标增加逐分钟目录更新。文案上限为 16 个 grapheme，超长时省略整枚。
+- **模型标签槽兼容**：keyed DSH按 provider 分别注册。旧 single DSH只渲染优先级最小的注册项；历史实测 WorkBuddy `-105`、Trae `-102`、Qoder `-101`，由 WorkBuddy 渲染。
+
+  Qoder 被选中时，外部 provider 优先委托其他标签组件；委托失败时显示名字与目录 `model.badge`（`src/client/host-badge.tsx`）。
+
+  互相委托可能形成递归，DSH错误处理会撤下抛错 entry；该行为属于旧槽机制的兼容限制。
+- **委托翻译器**：须按 `entry.locale` 通过 `ctx.locale.bind(ns)` 为被委托组件绑定 `t`。issue #23 中，DSH `DeepSeekModelLabel`（`locale: deepseek-model-label-1017`）调用 `t("badge.label")`，缺少翻译器时抛出 `TypeError: t is not a function`，导致标签组件被撤下。
+
+  绑定失败时改用本地后备标签。Qoder 自身 `settings.qoder` 字典仅用于本插件文案。
+- **版本记录**：版本号与 CHANGELOG 按 `RELEASING.md` §4 在发布时更新。

@@ -325,7 +325,7 @@ describe('规则文档仍然在位且没被削弱', () => {
     const numbered = section.split('\n').filter(line => /^\d+\.\s/.test(line))
     expect(numbered.length, '§2 截图规则条数减少了').toBe(4)
     expect(section, '「模糊 / 马赛克不算脱敏」这条结论不见了').toMatch(/模糊|马赛克/)
-    expect(section, '「先造数据再截图」这条不见了').toMatch(/先造数据|先造/)
+    expect(section, '缺少使用示例数据生成截图的要求').toMatch(/使用示例数据生成截图/)
   })
 
   it('PRIVACY.md §4 仍写明护栏读不了图片、且是黑名单', () => {

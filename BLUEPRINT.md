@@ -1,7 +1,7 @@
 # dsh-connect-workbuddy 架构蓝图（复刻向）
 
-> 目标：把 WorkBuddy 连接器读成「一个 DSH 模型 provider 插件的最小完整骨架」，
-> 供照着给 Qoder 做一个功能对等的插件。
+> 目标：分析 WorkBuddy 连接器的模块职责与 DSH provider 注册过程，
+> 供 Qoder 插件设计参考。本文记录 WorkBuddy 参考实现。
 
 ---
 
@@ -17,7 +17,7 @@
                             └───────────────┬──────────────────┘
                                             │ inject / ctx.inject
         ┌───────────────────────────────────▼────────────────────────────────────┐
-        │  src/index.ts   apply() — 装配中枢 / Config schema / 区域栈           │
+        │  src/index.ts   apply() — 插件入口 / Config schema / 区域服务           │
         └───┬──────────┬─────────────┬──────────────┬──────────────┬─────────────┘
             │          │             │              │              │
    ┌────────▼───┐ ┌────▼──────┐ ┌────▼───────┐ ┌────▼────────┐ ┌───▼─────────────┐
@@ -41,11 +41,11 @@
   CLI ：bin.ts（doctor）    样式/文案：client/locales.ts · client/styles.ts
 ```
 
-### 1.2 每个 src 文件一句话职责
+### 1.2 各 src 文件职责
 
 | 文件 | 行数 | 职责 |
 |---|---|---|
-| `index.ts` | 1951 | 插件入口：`apply()` 装配双区域栈、注册 settings、导出 Config schema 与全部公共 API |
+| `index.ts` | 1951 | 插件入口：`apply()` 初始化国内区与国际区服务、注册 settings、导出 Config schema 与全部公共 API |
 | `adapter.ts` | 438 | 用 `createProvider` + `openAICompletionsApi` 组装 pi-ai provider，包成 `PiAiAdapter`；模型描述符与 thinking 档位映射 |
 | `upstream.ts` | 1270 | 上游 HTTP 客户端：`chatStream` / `probeChat` / `refreshToken` / `fetchModels` / `fetchCredits` / check-in；`prepareChatBody`；`classifyUpstreamError`；区域判定 |
 | `shim.ts` | 1152 | 回环 OpenAI 兼容 HTTP 服务：安全加固、SSE 重写（`RecoveryStream`）、账号池故障转移循环 |
@@ -55,7 +55,7 @@
 | `account-pool.ts` | 515 | 池成员结构、`exclusionOf` / `rankPool` / `effectiveMembersOf` / `resolveTargetModel` 纯逻辑 |
 | `account-pool-run.ts` | 268 | 批量签到/测试的串行执行器（含间隔） |
 | `account-pool-store.ts` | 159 | 探测测量的磁盘持久化（与「用户偏好」分离） |
-| `web-status.ts` | 1448 | 把全部能力挂成 `ctx.webServer.register({kind:'exact'})` 同源路由 |
+| `web-status.ts` | 1448 | 通过 `ctx.webServer.register({kind:'exact'})` 注册同源路由 |
 | `status-paths.ts` | 1007 | 路由常量、区域参数、跨 host/client 共享的 DTO 与配置读取helper（`regionEnabledOf`/`unwrapVolatileDeep`） |
 | `dsml-recovery.ts` | 984 | 把模型吐出的标记语言还原成真正的 `delta.tool_calls`（解析规则） |
 | `markup-diagnosis.ts` | 401 | 只读的标记残留诊断 |
@@ -65,7 +65,7 @@
 | `transfer.ts` | 221 | 账号批量导出/导入文件格式 |
 | `web-server` 相关：`web-status.ts` | | 见上 |
 | `pi-ai-runtime.ts` | 151 | 用 `import.meta.resolve` 探测本插件解析到的 pi-ai 世代（0.85 legacy / 0.87 modern），**不 import pi-ai** |
-| `host-heartbeat.ts` | 175 | 写宿主心跳文件，供 `doctor` CLI 无浏览器判定宿主健康 |
+| `host-heartbeat.ts` | 175 | 写DSH 进程运行状态文件，供 `doctor` CLI 无浏览器判定DSH健康 |
 | `version.ts` | 17 | 构建期 `define` 注入的包版本 |
 | `bin.ts` | 335 | `dsh-connect-workbuddy doctor` CLI |
 | `client/index.tsx` | 196 | 浏览器插件入口：locale 注册 + 两个卡片槽位 + composer 积分槽位 |
@@ -76,7 +76,7 @@
 
 ---
 
-## 2. provider 注册链路
+## 2. provider 注册调用顺序
 
 ### 2.1 从 `apply()` 到模型出现在 DSH 选择器
 
@@ -101,7 +101,7 @@ apply(ctx, config)
         ├─ registration.global.adapter = ctx.llm.registerAdapter(['workbuddy-global'],   adapter)
         ├─ registration.cn.directory = ctx.llm.registerConfigurableProviders([ {cn entry}, {global entry} ])
         ├─ ctx.effect(() => () => { 三个 release() })   ← 统一释放
-        ├─ syncRegionRegistration(current())             ← 按 enabled 收敛
+        ├─ syncRegionRegistration(current())             ← 根据 enabled 注册或移除 provider
         ├─ ctx.llm.registerModelDiscovery(settingsNs, async (request, signal) => [...])
         ├─ writeHostHeartbeat()
         └─ 异步：fetchModels(credential) → deriveCatalog → catalog.set → adapters[region].invalidate()
@@ -118,27 +118,27 @@ apply(ctx, config)
 **（b）`ctx.llm.registerConfigurableProviders(entries[])` → `DirectoryRegistrationHandle`**
 
 - 一次调用持有**全部** entry；`replace` 语义是「设置完整集合」，不是增量。
-  因此按区域逐个 replace 会「最后一个赢家通吃」，必须**一次传入所有启用区域的完整数组**。
+  因此按区域逐个 replace 会覆盖先前区域的条目，必须**一次传入所有启用区域的完整数组**。
 - entry 字段：`{ provider, displayName, settingsNs, settingsPath: [], declared: false }`。
-- `settingsNs` 必须是宿主实际服务的命名空间（见下），宿主**精确匹配**查表 —— 猜错会让 provider 被判为「未配置」，配置入口与模型发现双双静默失效。
+- `settingsNs` 必须是DSH实际服务的命名空间（见下），DSH 按该值**精确匹配**，填写错误会使 provider 被判为「未配置」，进而导致配置入口与模型发现失效。
 
 **（c）`ctx.llm.registerModelDiscovery(settingsNs, async (request, signal) => models[])`**
 
-- 返回的 shape 是宿主发现目录的 DTO：`{ id, name, contextWindow, maxTokens, inputModalities }[]`；不需要的字段不返回（返回 `undefined` 字段会破坏形状假设）。
-- `request.provider` 是宿主当前正在为哪个 provider 询问 → 用 `regionOfProvider()` 反查区域；不认识的 provider 返回 `[]`。
+- 返回的 shape 是DSH发现目录的 DTO：`{ id, name, contextWindow, maxTokens, inputModalities }[]`；不需要的字段不返回（返回 `undefined` 字段会破坏形状假设）。
+- `request.provider` 是DSH当前正在为哪个 provider 询问 → 用 `regionOfProvider()` 反查区域；不认识的 provider 返回 `[]`。
 - 关闭的区域返回 `[]`（纵深防御，路由已撤回）。
 - 这里返回的是**草稿目录**（`deriveCatalog(discovered, enabledModelIds, contextBudgets)` + 图像选择），用户点「保存」才落到 `lastCatalog`。
 
-**（d）`settingsNamespaceOf(ctx)` —— 最容易踩的坑**
+**（d）通过 `settingsNamespaceOf(ctx)` 解析命名空间**
 
 ```ts
 ctx.fiber.entry?.options.id  // Loader 条目 id，不是插件自选名
 ```
-- 宿主 `describe()` 返回的 `ns` 就是这个 id；线上可能是 `include:dsh-connect-workbuddy`。
-- 探测失败（无 Loader，如测试直接 `ctx.plugin()`）时回落到常量 `WORKBUDDY_SETTINGS_NS`。
+- DSH `describe()` 返回的 `ns` 就是这个 id；线上可能是 `include:dsh-connect-workbuddy`。
+- 探测失败（无 Loader，如测试直接 `ctx.plugin()`）时使用常量 `WORKBUDDY_SETTINGS_NS`。
 - 客户端侧同理**不猜**：从 `configForms.describe().getSnapshot().view.namespaces` 里找匹配项，找不到再用声明值。
 
-**（e）`resolveRetryPolicy(undefined, 'label')`** —— profile 必填字段，用宿主默认重试策略。
+**（e）通过 `resolveRetryPolicy(undefined, 'label')` 获取 DSH 默认重试策略**。将结果写入 profile 的必填字段。
 
 ### 2.3 PiAiAdapter 组装（adapter.ts 核心）
 
@@ -147,7 +147,7 @@ createProvider({
   id: providerId, name: providerName,
   auth: { apiKey: { name, async resolve({credential}) {...} } },   // pi-ai 自己的 plane，实际不用
   models: buildModels(),                                            // 逐次读取 baseUrl
-  api: withLegacyContext(openAICompletionsApi(), generation),        // generation 门控
+  api: withLegacyContext(openAICompletionsApi(), generation),        // 根据 generation 选择兼容处理方式
 })
 // 关键：getModels 委托给「活读」，使目录刷新立刻生效
 const provider = { ...base, getModels: () => buildModels() }
@@ -173,7 +173,9 @@ new PiAiAdapter({
 要点：
 - **模型描述符**：`api: 'openai-completions'`，`baseUrl = shim.baseUrl() + '/v1'`（OpenAI SDK 会再拼 `/chat/completions`），`input` 由 `multimodal` 决定，`cost` 全 0（订阅额度无从定价），`reasoning` + `thinkingLevelMap` 由上游声明折叠（未声明的档位映射为 `null` = 不可用；`canDisableThinking !== true` 时 `off: null`）。
 - **displayName** 带积分倍率后缀 `GLM-5.3 · x0.79`，但**所有 join 一律用 model id**，显示名只用于展示。
-- **pi-ai 世代门控**（issues #24/#25/#26）：宿主给 0.87 时 transcript 是归一化形态（system 消息内含 prompt 与 `toolsAdded`），插件自带 0.85 的 api 读到会崩。`piAiRuntimeInfo()` 用 `import.meta.resolve` 找到实际解析到的那份 pi-ai 的 manifest 版本决定 `modern | legacy`；legacy 才包一层把 system 文本折回 `systemPrompt` 并**提升 `toolsAdded/toolsRemoved`** 回 `context.tools`。
+- **按 pi-ai 版本选择上下文格式**（issues #24/#25/#26）：DSH 使用 0.87 时，上下文为已整理的 transcript 数据（system 消息内含 prompt 与 `toolsAdded`），插件自带的 0.85 API 无法直接读取该格式。
+
+  `piAiRuntimeInfo()` 用 `import.meta.resolve` 找到实际解析到的那份 pi-ai 的 manifest 版本决定 `modern | legacy`；legacy 才包一层把 system 文本折回 `systemPrompt` 并**提升 `toolsAdded/toolsRemoved`** 回 `context.tools`。
 
 ---
 
@@ -200,7 +202,7 @@ interface WorkBuddyRegionState {
   showCreditsInMainUi?: boolean         // opt-out，默认 true
   lastCatalog?: WorkBuddyModelInfo[]     // 上次刷新的完整目录（卡片显示 + 运行时推导的来源）
   enabledModelIds?: string[]             // 用户勾选；空 = 全目录
-  imageModelIds?: string[]               // 图像输入显式 opt-in（唯一真相源）
+  imageModelIds?: string[]               // 图像输入由用户明确开启（仅根据此字段确定选择）
   offModelIds?: string[]                 // thinking off 的 per-model 覆盖；缺键 = 用内建规则
   contextBudgets?: Record<string, number>
   pool: {                               // 全部是「用户选择」，测量数据不入 settings
@@ -214,7 +216,7 @@ interface WorkBuddyRegionState {
 
 ### 3.2 schemastery `z.object` 要点
 
-- 声明式：`z.object({...})`，`.description()` 是**用户可见文档**（设置页直接展示），要写清取舍理由与默认行为；`.default(x)` 提供回落。
+- 声明式：`z.object({...})`，`.description()` 是**用户可见文档**（设置页直接展示），要写清取舍理由与默认行为；`.default(x)` 指定默认值。
 - **volatile 处理**：`0.1.7` 线把 volatile 值以「活引用」（cosmockit reference，形如 `{get(): T}`）交回。标记用能力探测而不是版本判断：
 
 ```ts
@@ -224,10 +226,10 @@ export function asVolatile<T>(s: z<T>): z<T> {
 ```
   - 不用手写 `meta.volatile = true`：那会绕过 schemastery 自己的 `validateVolatileSchema` 检查，产出旧线不认识的 schema。
   - 导出这个 helper 本身就是为了让「no-op 分支」在任意机器上可测。
-  - **读取必须 unwrap**：单层读用 `unwrapVolatile(value.accounts)`；要把整份 config 交给 settings 服务时必须**深拷贝解包**（`unwrapVolatileDeep`），否则服务校验 + `structuredClone` 整对象时，报错形如 `$.authFile expected string but got [object Object]` —— 这是真实发生过的、让整张设置卡片消失的缺陷。
+  - **读取必须 unwrap**：单层读用 `unwrapVolatile(value.accounts)`；要把整份 config 交给 settings 服务时必须**深拷贝解包**（`unwrapVolatileDeep`），否则服务校验 + `structuredClone` 整对象时，报错形如 `$.authFile expected string but got [object Object]` ，并导致整张设置卡片消失。该行为已有实测记录。
   - 客户端侧同样要 unwrap 再展开（展开活引用 = `{get: fn}`，会丢掉同级所有区域）。
 - **opt-out vs opt-in 的选择**：所有新增开关都用 opt-out（`!== false`）以保证旧配置行为不变；会花钱/领奖的批量动作（账号池成员）用 opt-in（`=== true`）+ 默认空。
-- **迁移而非删除**：旧单槽字段保留为 `@deprecated`，通过 `regionStateOf(config, region)` 读取 —— 只有当该区域无显式槽位时，扁平字段才被解释为 **cn** 区（`global` 永不继承，那正是「陈旧 CN 目录被与国际目录求交、用户勾选被静默丢弃」的 bug 根因）。
+- **迁移而非删除**：旧单槽字段保留为 `@deprecated`，通过 `regionStateOf(config, region)` 读取，并仅在 **cn** 区缺少显式区域配置时继承扁平字段（`global` 永不继承，那正是「陈旧 CN 目录被与国际目录求交、用户勾选被静默丢弃」的 bug 根因）。
 - 写入路径也要分清：卡片保存走「草稿→丢弃」语义，所以**测量数据必须存到 schema 之外**（`account-pool-store.ts`），否则一次保存会回滚定时器刚写入的结果。
 
 ---
@@ -244,7 +246,7 @@ export function asVolatile<T>(s: z<T>): z<T> {
 4. `ensureSystemHead`：首条不是 system 就 unshift 占位 system（`"You are a helpful assistant."`）。国际网关强制要求 system 打头，缺它一律 400/11128。
 5. `normalizeToolChoice`：
    - `"none"` → 删 `tool_choice` 并**删掉 `tools`/`functions`**；
-   - 对象形式 `{type:'auto'|'required'}` → 压成同名字符串；`{type:'function',function:{name}}` → 压成裸函数名（空名 → `'auto'`）；未知形态 → 删除；
+   - 对象形式 `{type:'auto'|'required'}` → 压成同名字符串；`{type:'function',function:{name}}` → 转换为函数名字符串（空名 → `'auto'`）；未知形态 → 删除；
    - 已存在的 `context.tools` 是权威，**不动**。
 6. `declaredTools(prepared)` 从同一份 prepared JSON 取 `{names, requiredParameters, pinnedToolName}`，供 DSML 恢复判断「本请求声明过哪些工具」，`undefined` = 未声明（gate 3）。
 
@@ -254,13 +256,13 @@ export function asVolatile<T>(s: z<T>): z<T> {
 
 1. **帧序永不改变**：按到达顺序转发；唯一自造的帧是流结束时补的那一帧。
 2. **hold 是临时的、自偿的**：只有当目前为止的输出**全是标记**才缓存帧；一旦出现真实散文或真实 tool call，立刻按序 flush 并永久转为直通。普通回答零延迟、零丢弃。
-3. **重试不得拼接两份答案**：`windowOpened` 之前的帧都没写过客户端，因此可以整体丢弃重来 —— 这把「流开始前失败可重试」的承诺扩展到「只能事后识别」的那一类（整轮只吐标记）。
+3. **重试不得拼接两份答案**：`windowOpened` 之前的帧均尚未发送给客户端，因此整轮只输出标记、结束后才识别为失败的尝试，也可整体丢弃并重新请求。
 4. **上游已说结构化调用时绝不臆造**：一旦出现原生 `delta.tool_calls`，本次响应剩余部分**永久关闭**恢复（避免两条调用通道并存）。
 
 帧内处理要点：
 - 携 `finish_reason` 的帧在转发前必须先 `drainBuffer()`（尾部内容逻辑上在终止符之前，否则按 `finish_reason` 停收的客户端会丢尾巴）。
 - 空 `delta.content` + 有 `finish_reason` → 先排空缓冲。
-- 恢复出的调用走 `callsFrame`：`{index, id, type:'function', function:{name, arguments}}` 且 `finish_reason: 'tool_calls'`（不设它会让「等 reason 再执行」的客户端永远不执行）。
+- 恢复出的调用走 `callsFrame`：`{index, id, type:'function', function:{name, arguments}}` 且 `finish_reason: 'tool_calls'`（不设它会让「等 reason 再执行」的客户端始终不执行）。
 - 重试路径：`writer.discard()` 丢弃 hold，再起一个新 `RecoveryStream`。
 
 ### 4.3 工具调用回传
@@ -280,7 +282,7 @@ type UpstreamErrorKind =
   | 'not_found' | 'server' | 'client'
 ```
 
-`classifyUpstreamError(status, body)`：先 402，再按标记表（注意中文标记要在**原串**上匹配、大小写不敏感表在 lower 串上匹配），最后按状态码兜底。
+`classifyUpstreamError(status, body)`：先 402，再按标记表（注意中文标记要在**原串**上匹配、大小写不敏感表在 lower 串上匹配），最后按状态码分类。
 
 shim 侧两张映射表：
 
@@ -293,15 +295,19 @@ shim 侧两张映射表：
 | `not_found` / `server` | 502 | 原样 |
 | `client` | 400 | 原样 |
 
-**`code` 是宿主分类的唯一通道**：DSH 靠 `type + code + message` 里的英文短语判定「是否原地重试（5 次退避）」还是「交给跨 provider failover」，只有 `RATE_LIMIT/SERVER/TIMEOUT/TRANSPORT/EMPTY_RESPONSE` 在原地重试集里。上游 429 的文案是中文（「将在 … 重置」，几小时后），短语分类器看不出来，所以必须用 `quota_exceeded` 这个词把「要等很久」和「等两秒」区分开，而 **HTTP 状态仍保持 429**（那是上游真实返回的）。`type` 保留插件自己的 kind 供人读日志。
+**`code` 是DSH分类的唯一通道**：DSH 靠 `type + code + message` 里的英文短语判定「是否原地重试（5 次退避）」还是「交给跨 provider failover」，只有 `RATE_LIMIT/SERVER/TIMEOUT/TRANSPORT/EMPTY_RESPONSE` 在原地重试集里。
 
-**凭据被拒（独立类）**：`WorkBuddyCredentialRejectedError`，用 `code = 'WORKBUDDY_CREDENTIAL_REJECTED'` 标记而非 `instanceof`（打包后可能跨模块实例）。触发点：401/403 且响应体是 HTML（openresty/APISIX 边缘拒绝）；JSON 信封的 401/403 也映射到同一个类。含义是「换重登才有意义」，与瞬时故障完全不同，卡片绝不能混淆。
+上游 429 的文案是中文（「将在 … 重置」，几小时后），短语分类器看不出来，所以必须用 `quota_exceeded` 这个词把「要等很久」和「等两秒」区分开，而 **HTTP 状态仍保持 429**（那是上游真实返回的）。
+
+`type` 保留插件自己的 kind 供人读日志。
+
+**凭据被拒（独立类）**：`WorkBuddyCredentialRejectedError`，用 `code = 'WORKBUDDY_CREDENTIAL_REJECTED'` 标记而非 `instanceof`（打包后可能跨模块实例）。触发点：401/403 且响应体是 HTML（openresty/APISIX 边缘拒绝）；JSON 响应中的 401/403 也映射到同一个类。该错误表示需要重新登录；卡片应区分凭据被拒与瞬时故障。
 
 **限流/凭据拒绝的处理链**：
 1. `chatStream` 返回 `{ok:false, kind, status, message, detail}`；
 2. `isFailoverWorthy(kind)` = `kind !== 'client'`（400 是请求本身坏，换账号只会同样 400）；
 3. 进入故障转移循环：调 `failoverAccount(triedIds)`（策略在插件侧），**每个候选之间等 2s**（上游按请求量限流，零间隔重试会集体撞墙），可中断（`controller.signal`）；
-4. 每个失败尝试都记一次测量（包括**最后一次**失败 —— 那才是最该被下次请求避开的账号）；`controller.signal.aborted`（用户关面板）时**不记**（否则本地 abort 会被当成账号坏了）；
+4. 每次失败均保存测量结果，**最后一次失败**也须记录，供后续请求避开该账号；`controller.signal.aborted`（用户关面板）时**不记**（否则本地 abort 会被当成账号坏了）；
 5. 全部失败 → `writeOpenAIError` + 附「已尝试 N 个账号」；`policy_reject` 单独一条文案，带上 `displayMsg` 与 `requestId`（这是唯一需要用户看原文的失败）。
 
 ---
@@ -324,7 +330,9 @@ shim 侧两张映射表：
 | POST | `/v1/chat/completions` | 主路径：prepare → 故障转移 → SSE 重写 |
 | 其他 | — | 404 |
 
-挂载方式：`createServer(handler)` + `server.listen(0, '127.0.0.1')`（**端口 0 = 由内核分配**）。返回 `{ ready, baseUrl(), token(), close() }`；`baseUrl()` 每次重新读 `server.address()`，所以 adapter 的模型描述符逐次构建时才能拿到最终端口。**装配顺序固定为：先起 shim，`await shim.ready`，再造 adapter。**
+挂载方式：`createServer(handler)` + `server.listen(0, '127.0.0.1')`（**端口 0 = 由内核分配**）。返回 `{ ready, baseUrl(), token(), close() }`；`baseUrl()` 每次重新读 `server.address()`，所以 adapter 的模型描述符逐次构建时才能拿到最终端口。
+
+**初始化顺序：启动 shim，执行 `await shim.ready`，再创建 adapter。**
 
 `close()`：`server.close()` + `server.closeAllConnections()`。
 
@@ -338,7 +346,7 @@ chat POST    Content-Type 必须是 application/json（挡 simple-request CSRF�
 ```
 - 绑定 `127.0.0.1` 而非 `0.0.0.0`；secret `randomBytes(32).toString('base64url')`，只存在内存；错误体一律 OpenAI 形状 `{error:{message,type,code}}`。
 - body 上限 64 MiB，超限 destroy。
-- 四个校验必须在路由判定**之前**执行 —— 否则 `/healthz` 也会被拿来探活。
+- 四项校验均在路由判定**之前**执行，使 `/healthz` 等端点同样受认证与来源检查保护。
 
 ### 5.4 客户端断连的取消
 
@@ -354,7 +362,7 @@ chat POST    Content-Type 必须是 application/json（挡 simple-request CSRF�
 2. 环境变量 `WORKBUDDY_AUTH_FILE_ENV`；
 3. 平台默认目录（`defaultDesktopAuthDirs(platform, home, env)`，三参数可注入以便跨平台测试）：
    - darwin：`~/Library/Application Support/CodeBuddyExtension/Data/Public/auth`
-   - win32：`%LOCALAPPDATA%` 与 `%APPDATA%` 两条（env 优先，回落 home 派生）
+   - win32：`%LOCALAPPDATA%` 与 `%APPDATA%` 两条（优先读取环境变量，缺少时根据用户主目录推导）
    - linux：`$XDG_CONFIG_HOME` 或 `~/.config` 下的同名目录
 
 **显式路径只 pin 住「目录」而不是「文件」**：同级 `*.info` 时间戳备份照样扫描（用户显式指定路径时仍应能切账号），只是文件排序变了。
@@ -384,11 +392,11 @@ Object.freeze([...byId.values()])   ← 冻结：多个调用方共享同一数�
 ### 6.3 token 刷新
 
 - `resolve()` = `current()` + 必要时刷新：`needsRefresh()` 按 `expiresAtMs - refreshMarginMs` 判断，命中则 `refreshNow()`。
-- 刷新只走 `upstream.refreshToken(credential)`（`X-Refresh-Token` 头**只出现在刷新请求**，chat 请求绝不携带 refresh token —— 这是安全红线）。
+- 令牌刷新统一调用 `upstream.refreshToken(credential)`，并将 `X-Refresh-Token` 头限定在刷新请求中；chat 请求仅使用访问令牌。
 - 刷新结果写回 vault 条目并记 `refreshedFrom = <被刷新的文件名>`；该字段在下次扫描时让「插件刷新的副本」压过「App 的实时文件」，避免每次启动都重新刷新（用名字相等而非时间戳，这是双时钟比较表达不了的第三种状态）。
 - **读凭据的两条路必须分清**：
-  - `credentialFor(id)` —— 取任意账号的凭据，**不动选择**（批量测试/池排名/卡片表格用）
-  - `resolve()` —— 取「当前要计费的那个」，**会**改运行态选择（请求路径用）
+  - `credentialFor(id)`：取任意账号的凭据，**不动选择**（批量测试/池排名/卡片表格用）
+  - `resolve()`：取「当前要计费的那个」，**会**改运行态选择（请求路径用）
 - `setRotatedAccount(id)` 是池的运行态覆盖，**不写 settings**；池关闭时清空覆盖，用户选择原样回来。
 
 ### 6.4 区域隔离（cn / global 双 provider 并行）
@@ -400,11 +408,11 @@ Object.freeze([...byId.values()])   ← 冻结：多个调用方共享同一数�
 3. **运行时栈**：每个区域一套 `{store, catalog, shim}`，各自独立端口。
 4. **凭据**：`regionOf(domain)` 从凭据的登录域推导区域；`matchesRegion()` 让一个区域的 store **看不见**另一个区域的账号（选账号、刷新、状态查询全部隔离）。国际账号在 `codebuddy.ai` 与 `workbuddy.ai` 两个品牌域下，网关不通用，因此 base 也跟着 `domain` 走。
 
-**区域关闭**：`regionState.enabled === false` → `adapter.replace([])` + directory `replace([仅启用区])`。只隐藏卡片 tab 不够 —— 模型仍会在选择器里可选。
+**区域关闭**：`regionState.enabled === false` 时，调用 `adapter.replace([])` 清空适配器模型，并以 `replace([仅启用区])` 更新目录，从而同时移除卡片 tab 和模型选择器中的对应模型。
 
 **区域空账号**：`catalog.setRegionUsable(accounts().length > 0)`，没有本地登录的区域不广告任何模型（否则是一排必定 401 的行）。DSH 会过滤掉 `models.length === 0` 的 provider 组，正好自动隐藏。
 
-**目录三段回落（issue #32）**：`state.lastCatalog?.length ? → liveModels.length ? → fallbackModelsFor(region)`。保存槽位丢了目录时必须降到「实时目录」而不是「静态列表」，否则 `applySelection` 会把实时发现的模型全删掉。
+**目录来源优先级（issue #32）**：`state.lastCatalog?.length ? → liveModels.length ? → fallbackModelsFor(region)`。保存的配置缺少目录时，应先使用实时目录，再使用静态列表，以保留 `applySelection` 中实时发现的模型。
 
 ---
 
@@ -420,7 +428,7 @@ export function apply(ctx) {
     const t = ctx.locale.bind('settings.workbuddy')
     const softGet = name => ctx.get(name)           // 关键：属性访问未声明服务会 THROW
     const forms = softGet('configForms')            // 0.1.7 的客户端设置面
-    // 从 forms.describe().getSnapshot().view.namespaces 里找出宿主真正服务的 ns
+    // 从 forms.describe().getSnapshot().view.namespaces 里找出DSH真正服务的 ns
     const settingsScope = forms?.get(ns)
     ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({name, key, priority:30, inject: () => ({t, settingsScope})}, WorkBuddyCard))
     ctx.slots.inject('plugins.row.config',    () => ctx.slots.register({...}))
@@ -430,10 +438,10 @@ export function apply(ctx) {
 ```
 
 要点：
-- **整个 `apply` 包 try/catch**：槽位 API 变更时降级为 console.error，**绝不能让整个 client bundle 加载失败**（否则宿主出现 "Failed to load plugins" 红色横幅，连 provider 服务都受牵连）。
+- **整个 `apply` 包 try/catch**：槽位 API 变更时降级为 console.error，**绝不能让整个 client bundle 加载失败**（否则DSH出现 "Failed to load plugins" 红色横幅，连 provider 服务都受牵连）。
 - 每个槽位**单独** try/catch：一个槽位注册失败不得拖垮其他槽位。
-- `inject` 里只声明跨线共有的服务；`configForms` / `settingsScope` 一律走 `softGet()` 软探测 —— Cordis 的依赖门是硬的，声明一个运行时不提供的服务会让 `apply` 永远不执行。
-- **settings 命名空间**：客户端不猜宿主用哪个 ns，从 `configForms.describe()` 里**问**，用 `/workbuddy/i` 子串匹配（entry id 由宿主定，可能是 `include:` 前缀），失败回落声明值。浏览器侧同样要 `unwrapVolatileDeep(scope.getSnapshot().value)` 再读字段。
+- Cordis 会等待 `inject` 声明的全部服务，因此这里只声明各版本均提供的服务；`configForms` 与 `settingsScope` 通过 `softGet()` 查询，以便在旧版 DSH 缺少对应服务时仍能执行 `apply`。
+- **settings 命名空间**：客户端通过 `configForms.describe()` 读取 DSH 使用的命名空间，以 `/workbuddy/i` 子串匹配（entry id 由DSH定，可能是 `include:` 前缀），查询失败时使用声明的命名空间。浏览器侧同样要 `unwrapVolatileDeep(scope.getSnapshot().value)` 再读字段。
 - 构建：`package.json` 的 `dsh.client.inject` 列出四个客户端包；tsdown 把 client 打成 **CJS**，banner/footer 包成 `window.__ModuleLoader__.load({id, factory})`，`react` / `react-dom` / `react-dom/client` / cordis / 客户端 DSH 包全部 `neverBundle`（**react-dom 必须外置**，否则内联的 dev/prod CJS 顶部 `process.env.NODE_ENV` 在浏览器直接抛，整个客户端半边导不进来）。
 
 ### 7.2 tab 结构与主要交互（WorkBuddyCard）
@@ -459,10 +467,10 @@ export function apply(ctx) {
 
 用的是 `conversation.input.left`（**per-session 的列表槽**），不是 `sidebar.footer.action`（**root 级单共享行**，两个连接器插件各占一行会互相挤压）。
 
-判定链（`ComposerCreditsGate`，可单测、不依赖宿主）：
+判定链（`ComposerCreditsGate`，可单测、不依赖DSH）：
 
 ```
-useProjection('modelSelection')            ← 宿主计算的投影（插槽注入的 hook）
+useProjection('modelSelection')            ← DSH 提供的模型选择状态（通过插槽 hook 读取）
   selectedProviderOf = projection.next ?? projection.lastUsed   ← next 优先（已选未发也是当前选择）
   WORKBUDDY_COMPOSER_PROVIDERS[provider] → region               ← provider 归属判定与区域选择是同一个查找
   regionCreditsShownOf(unwrapVolatileDeep(scope.getSnapshot().value), region)  ← opt-out
@@ -471,10 +479,10 @@ undefined → return null（不渲染、不启动 fetch 循环）
 ```
 
 渲染体（`ComposerCredits`）：
-- 读数形态 `WB CN · 1,072`（标明是 WB CN 还是 WB AI），**本身没有任何控件**（这一行与 shell 自己的权限/agent/模型控件共享，每多一个控件都在抢空间）。
+- 读数形态 `WB CN · 1,072`（标明是 WB CN 还是 WB AI），**本身没有任何控件**（这一行与 shell 自己的权限/agent/模型控件共享，新增控件会增加输入区的布局压力）。
 - 点击弹出**锚定面板**（`createPortal` + `useAnchoredPosition` + `useDismissOnOutsidePointer`），面板里才是账号表格，点行即切账号；刷新按钮在面板里。
 - 定时刷新 5 分钟；失败时**保留上次数值**；某账号余额读不到显示 `—`，**绝不显示 `0`**（端点在该情况下省略字段，正是为了让组件不能给出错误断言）。
-- 样式在模块加载时幂等注入 `<head>`（卡片 CSS 只在设置卡片渲染时才加载，而宿主上卡片不一定被渲染）。
+- 模块加载时将样式写入 `<head>`，重复加载时复用同一份样式表（卡片 CSS 只在设置卡片渲染时才加载，而DSH上卡片不一定被渲染）。
 
 **用到的 DSH client 注入点清单**：`locale.register/bind` · `slots.inject` · `slots.register`（卡片两种：Plugins tab 的 bundle 行 / 插件列表行；composer 一种）· `configForms.describe().getSnapshot().view.namespaces` · `configForms.get(ns)` → `settingsScope`（`getSnapshot().value` + `subscribe`）· 槽位注入的 `useProjection('modelSelection')`。
 
@@ -484,7 +492,7 @@ undefined → return null（不渲染、不启动 fetch 循环）
 
 ### 8.1 产品特有（必须重写）
 
-| 项 | WorkBuddy 的具体内容 | 换 Qoder 要做什么 |
+| 项 | WorkBuddy 的具体内容 | 迁移至 Qoder 时的调整 |
 |---|---|---|
 | 上游 base 与路径 | `copilot.tencent.com` / `www.workbuddy.ai` / `www.codebuddy.cn`；`/v2/chat/completions`、`/v2/enterprises/personal/models`、`/v3/config`、`/v2/plugin/auth/token/refresh`、`/v2/billing/meter/*` | 换成 Qoder 的 chat completions / 模型目录 / 积分 / 刷新端点 |
 | 请求头约定 | `X-User-Id` / `X-No-User-Id` / `X-Enterprise-Id` / `X-Domain` / `X-Product: SaaS` / CLI 或 Desktop UA（UA 决定服务端返回哪份目录！） | 抓一次真实请求照抄 |
@@ -501,19 +509,19 @@ undefined → return null（不渲染、不启动 fetch 循环）
 
 ### 8.2 DSH 插件骨架（几乎可原样复用）
 
-- **装配顺序**（先 shim.ready → 再 adapter → 再 registerAdapter/ConfigurableProviders → 最后异步刷新目录）与全部释放路径（`ctx.effect(() => () => release?.())` + 注册中 dispose 的兜底）。
+- **初始化顺序**（先 shim.ready → 再 adapter → 再 registerAdapter/ConfigurableProviders → 最后异步刷新目录）与全部释放路径（`ctx.effect(() => () => release?.())` + 注册中 dispose 的后备策略）。
 - **`settingsNamespaceOf(ctx)` 探测 + 客户端 `configForms.describe()` 反查**这一对「不要猜 ns」的机制。
-- **`applySelection` / `configuredModels` / `displayModels` 三段回落**（issue #32）与 `withImageSelection` / `withEffectiveOff` 的「用户显式选择是唯一真相源」原则。
-- **`WorkBuddyCatalog` 的 usable/enabled 双闸门**（无账号不广告 / 用户关闭不广告）+ `setRegionUsable` 返回是否变化以便跳过 invalidate。
+- **`applySelection` / `configuredModels` / `displayModels` 目录来源优先级**（issue #32）与 `withImageSelection` / `withEffectiveOff` 的仅依据用户保存的选择确定启用状态的规则。
+- **`WorkBuddyCatalog` 的 usable/enabled 双重检查**（缺少账号或用户关闭时均隐藏模型）+ `setRegionUsable` 返回是否变化以便跳过 invalidate。
 - **整个 shim 的安全模型**：随机端口、进程内 secret、常量时间比对、Host/Origin/Content-Type 三重入站校验、`res.on('close')` 取消、body 上限、OpenAI 形状错误体。
-- **`KIND_STATUS` / `KIND_HOST_CODE` 双表**与「`code` 是宿主分类唯一通道，`type` 留给人读」的设计；`soft_rate → quota_exceeded` 的具体取值可按 Qoder 语义重挑。
+- **`KIND_STATUS` / `KIND_HOST_CODE` 双表**与「`code` 是DSH分类唯一通道，`type` 留给人读」的设计；`soft_rate → quota_exceeded` 的具体取值可按 Qoder 语义重挑。
 - **`UpstreamErrorKind` 七分类 + 标记表 + `WorkBuddyCredentialRejectedError`（按 code 而非 instanceof 标记）**。
 - **`applyPoolSelection` / `failoverAccountFor` / `recordAccountFailure` 的池策略**：per-request 借用而非改用户选择、每次尝试间可中断的 2s 间隔、最后一次失败也记测量、abort 不记、`localPoolMembers`（请求路径零网络）+ `poolMembersOf`（卡片路径才拉积分）二分。
-- **`probe.ts` 的方法论**（结论随产品变、方法不变）：发真实体积请求、按体积限流这个洞察、`Retry-After` → 上游文案 → 配额刷新点三源冷却时间（顺序与 `retrySource` 标注）、**没有时间就说没有、绝不编造**、`redactUpstreamText` 在捕获点脱敏。
+- **`probe.ts` 的方法论**（结论随产品变、方法不变）：按实际请求长度发送测试请求、按体积限流这一判断依据、`Retry-After` → 上游文案 → 配额刷新点三源冷却时间（顺序与 `retrySource` 标注）、缺少恢复时间时保留未知状态、`redactUpstreamText` 在捕获点脱敏。
 - **`schemastery` 用法**：`asVolatile` 能力探测、`unwrapVolatile` / `unwrapVolatileDeep`、opt-out vs opt-in 的取舍、deprecated 字段的 `regionStateOf` 迁移读取、偏好与测量分离（`account-pool-store`）。
-- **客户端全部骨架**：`slots.inject` + `register`（两卡片槽 + `conversation.input.left`）、`locale.register/bind` + `declare module` 增强 `LocaleNamespaceMap`、软服务探测 `softGet`、整段 try/catch 降级、`configForms` 反查 ns、`useProjection('modelSelection')` gate、`createPortal` 锚定面板、幂等 CSS 注入。
+- **客户端全部骨架**：`slots.inject` + `register`（两卡片槽 + `conversation.input.left`）、`locale.register/bind` + `declare module` 增强 `LocaleNamespaceMap`、软服务探测 `softGet`、整段 try/catch 降级、`configForms` 反查 ns、`useProjection('modelSelection')` gate、`createPortal` 锚定面板、重复加载时复用 CSS 样式表。
 - **构建**：tsdown 双 target（node ESM + browser CJS `__ModuleLoader__` 包装）、`react-dom` 必须外置、构建期 `define` 版本。
-- **测试策略**（`tests/` 66 个文件）：纯函数全钉死（`deriveCatalog`/`classifyUpstreamError`/`prepareChatBody`/`parseRetryAfter`/`rankPool`…）；shim 用**裸 socket 写**测 Host 头（`fetch` 会覆盖 Host 头，测不了 DNS rebinding）；adapter 测试 **mock 掉 stream API 并记录收到的 context**，否则纯函数测试在 `withLegacyContext` 被删掉时仍然全绿（变异体复原 #24）；React 测试用 jsdom + 渲染断言；`client-fallback.spec.ts` **镜像复制** `client/index.tsx` 的 try/catch 形状（因为真入口在 Node 下导不进浏览器专用 DSH 包）。
+- **测试策略**（`tests/` 66 个文件）：纯函数全固定（`deriveCatalog`/`classifyUpstreamError`/`prepareChatBody`/`parseRetryAfter`/`rankPool`…）；shim 用**直接写入 socket**测 Host 头（`fetch` 会覆盖 Host 头，测不了 DNS rebinding）；adapter 测试 **mock 掉 stream API 并记录收到的 context**，否则纯函数测试在 `withLegacyContext` 被删掉时仍然全部通过（变异体复原 #24）；React 测试用 jsdom + 渲染断言；`client-fallback.spec.ts` **镜像复制** `client/index.tsx` 的 try/catch 形状（因为真入口在 Node 下导不进浏览器专用 DSH 包）。
 
 ### 8.3 换一个上游产品的最少改动集
 
@@ -521,19 +529,21 @@ undefined → return null（不渲染、不启动 fetch 循环）
 
 **必改（4 个文件）**
 
-1. `src/upstream.ts` —— 端点、base、请求头、`prepareChatBody`（大概率删空实现保留函数以免改 shim）、`classifyUpstreamError` 的标记表、`fetchModels` 的目录路径与解析（`parseUpstreamModel` 的字段名）、`fetchCredits` 的响应解析、`refreshToken`。**若上游已发原生 `tool_calls` 且请求体合规，`RecoveryStream` 可以退化成纯转发，`dsml-recovery.ts`/`markup-diagnosis.ts`/`native-modality.ts` 整个删掉。**
-2. `src/auth.ts` —— `parseWorkBuddyAuth`（Qoder 凭据文件形状）、`defaultDesktopAuthDirs`（Qoder 的存储路径）、`WORKBUDDY_LIVE_FILENAME`、`workbuddyAccountId`（若 Qoder 有稳定 uid 就用它，比哈希更好）。`at-rest.ts` 若明文则删。`oauth.ts`/`transfer.ts` 无需求则删。
-3. `src/catalog.ts` —— 静态 fallback 名单（抓一次真实目录）+ 字段映射。
-4. `src/index.ts` —— provider id/显示名、`WORKBUDDY_PROVIDERS` 映射、`apply()` 里 `fetchModels` 后的 stamp 链、`cordis.patch.yml` 与 `package.json` 的插件 id、`registerModelDiscovery` 的返回映射。
+1. `src/upstream.ts`：端点、base、请求头、`prepareChatBody`（大概率删空实现保留函数以免改 shim）、`classifyUpstreamError` 的标记表、`fetchModels` 的目录路径与解析（`parseUpstreamModel` 的字段名）、`fetchCredits` 的响应解析、`refreshToken`。
+
+   **若上游已发原生 `tool_calls` 且请求体合规，`RecoveryStream` 可以退化成纯转发，`dsml-recovery.ts`/`markup-diagnosis.ts`/`native-modality.ts` 整个删掉。**
+2. `src/auth.ts`：`parseWorkBuddyAuth`（Qoder 凭据文件形状）、`defaultDesktopAuthDirs`（Qoder 的存储路径）、`WORKBUDDY_LIVE_FILENAME`、`workbuddyAccountId`（若 Qoder 有稳定 uid 就用它，比哈希更好）。`at-rest.ts` 若明文则删。`oauth.ts`/`transfer.ts` 无需求则删。
+3. `src/catalog.ts`：静态 fallback 名单（抓一次真实目录）+ 字段映射。
+4. `src/index.ts`：provider id/显示名、`WORKBUDDY_PROVIDERS` 映射、`apply()` 里 `fetchModels` 后的 stamp 链、`cordis.patch.yml` 与 `package.json` 的插件 id、`registerModelDiscovery` 的返回映射。
 
 **必改（1 个客户端文件）**：`src/client/WorkBuddyCard.tsx`（文案、字段、路由调用）；`status-paths.ts` 的路径常量与 DTO 类型。
 
 **大概率可删**：`dsml-recovery.ts` `markup-diagnosis.ts` `at-rest.ts` `oauth.ts` `transfer.ts` `account-pool*.ts` `credential-recovery.ts`（约 **4000+ 行**），连带 `AccountPool.tsx` `AccountTransfer.tsx` `OAuthSignIn.tsx` 与对应路由。
 
-**必须原样保留**：`adapter.ts` 的组装骨架（去掉 legacy context 折叠后可简化到 ~150 行）、`shim.ts` 的安全/路由/failover 骨架（去掉 RecoveryStream 后 ~350 行）、`index.ts` 的注册链路与 volatile/schema 治理、全部客户端槽位挂载。
+**必须原样保留**：`adapter.ts` 的组装骨架（去掉 legacy context 折叠后可简化到 ~150 行）、`shim.ts` 的安全/路由/failover 骨架（去掉 RecoveryStream 后 ~350 行）、`index.ts` 的注册调用顺序与 动态配置读取与配置结构校验、全部客户端槽位挂载。
 
-**改动量估算**：保留骨架 ~3500 行（其中 1200 行是 index.ts 的装配与 schema 治理、1150→350 的 shim、196 的 client 入口），重写 ~1500 行，删除 ~4000 行。
+**改动量估算**：保留骨架 ~3500 行（其中 1200 行是 index.ts 的组件初始化与配置结构校验、1150→350 的 shim、196 的 client 入口），重写 ~1500 行，删除 ~4000 行。
 
 ### 8.4 单区域产品的简化
 
-若 Qoder 只有单一区域，最省事的做法**不是删区域维度，而是把 `WorkBuddyRegion` 换成单值 `'cn'`**：这样 `index.ts` 里的区域循环、`syncRegionRegistration`、客户端 tab、草稿隔离等全部逻辑原样跑通，将来要加国际版时零改动回填。删维度会同时删掉 `regions` 分区、`accounts` 分区、tab 隔离、以及那个「陈旧目录求交」的 bug 的全部防线。
+若目标产品只有单一区域，可将 `WorkBuddyRegion` 改为单值 `'cn'`，保留 `index.ts` 的区域循环、`syncRegionRegistration`、客户端 tab 与草稿隔离结构。后续增加区域时，可复用 `regions`、`accounts` 分区及目录隔离逻辑。

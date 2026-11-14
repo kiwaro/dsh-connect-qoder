@@ -1,31 +1,26 @@
 # 获取并配置 PAT（Personal Access Token）
 
-本插件用 **PAT** 接入 Qoder。这份文档只讲三件事：PAT 是什么、从哪拿、怎么填进插件。
+本页说明 PAT 的用途、申请方式、插件配置与接口验证记录。
 
-## 一、PAT 是什么
+## 一、PAT 定义与用途
 
-PAT 是 Qoder 官方发给开发者的**个人访问令牌**，形如 `pt-` 开头的一串字符。你可以把它理解成「给外部程序用的一把钥匙」：谁持有它，谁就能以你的身份调用 Qoder 的接口。
+PAT（Personal Access Token）是 Qoder 签发的个人访问令牌，以 `pt-` 开头。持有者可在令牌授权范围内调用 Qoder 接口。
 
-它的两个特点决定了本插件的设计：
+- **创建与撤销**：用户在 Qoder 控制台创建令牌，并可随时撤销。
+- **保密要求**：令牌须按账号凭据保管，禁止提交至代码仓库或公开聊天、issue。
 
-- **你自己签发、自己吊销**：不需要把账号密码交给任何第三方，随时能在设置页删掉。
-- **等价于你的账号权限**：泄露它等于泄露账号，因此不要提交进代码仓库、也不要贴到聊天窗口或 issue 里。
-
-插件拿到 PAT 之后做的事（这也是它**为什么只需要 PAT**的原因）：
+插件使用 PAT 向 Qoder 交换会话令牌，后续模型请求由 cosy 会话认证：
 
 ```text
-PAT  ──(一次性)──>  Qoder 网关 /jobToken 交换  ──>  jobToken
-                                                      │
-                                                      ↓
-                                          之后每次请求带签名会话头
-                                          （PAT 此后不再出现）
+PAT -> Qoder jobToken 交换接口 -> jobToken -> cosy 签名会话
+    -> sash 令牌交换接口 -> sash 接口令牌
 ```
 
-PAT 只在**进程内**参与这次交换：DSH 的模型客户端（pi-ai）连的是本机的回环端口，真正的 PAT 一直在插件进程里，不进网络请求、不写进会话记录。
+PAT 由插件 Host 进程保管，并经 HTTPS 发送至 Qoder 的令牌交换接口；用量查询的兼容回退路径也可能使用 PAT。DSH 的模型客户端（pi-ai）连接本机回环端口，使用本地 shim 凭据。PAT 不写入会话记录。
 
-## 二、从哪里拿 PAT
+## 二、申请 PAT
 
-两个区域各发一份，**互不通用**：
+国内版和国际版分别签发令牌，使用时须匹配区域：
 
 | 区域 | 服务站点 | 发证入口 |
 | --- | --- | --- |
@@ -34,33 +29,33 @@ PAT 只在**进程内**参与这次交换：DSH 的模型客户端（pi-ai）连
 
 创建时：
 
-1. 给令牌起一个**名字**（只是给你自己看的备注，比如「DSH 笔记本」）。
-2. 如果页面要求选**权限范围 / 有效期**，按需选择——本插件只用模型推理能力，选默认即可；有有效期的话注意到期后要重新签发。
-3. 点创建。**令牌通常只完整显示一次**，当场复制保存（形如 `pt-xxxxxxxx`）。
+1. 填写令牌名称，用于区分用途，例如“DSH 笔记本”。
+2. 按控制台要求选择**权限范围 / 有效期**，确保授权覆盖所需接口；到期后重新签发。
+3. 点击创建，复制并妥善保存完整令牌（形如 `pt-xxxxxxxx`）；控制台通常仅在创建时完整显示一次。
 
 > 注意：这里说的是 Qoder **控制台网页版**里的入口，不是桌面客户端的设置页。
 
-## 三、怎么填进插件
+## 三、配置插件凭据
 
-插件侧有两条路，二选一（同时配也没问题，会自动去重合并）。
+插件支持设置卡片和环境变量两种配置方式；同时配置时按账号去重合并。
 
-### 方式 A：在设置卡片里粘贴（推荐，可多账号）
+### 方式 A：设置卡片（支持多账号）
 
 ```text
 DSH → 插件 → dsh-connect-qoder → 设置卡片
      → 选对应的 tab（国内版 / 国际版）
      → 点「添加 PAT」
-     → 在输入框贴入 pt-…（可顺便填一个显示名，会自动带出真实账号名）
+     → 输入 pt-…（可填写备注名，验证时读取账号名）
      → 提交
 ```
 
-提交时插件会**立刻拿它去 Qoder 网关做一次真实验证**：能换到 jobToken 才算通过，失败会直接拒绝并报错，不会把一个无效令牌存进去。所以「提交后没反应」以外的情况，都说明令牌本身有问题。
+提交时，插件通过 Qoder 网关交换 jobToken，成功后保存凭据。验证失败会显示错误；可能原因包括令牌、区域、网络连接和上游服务状态。
 
-卡片里可以放**多个**账号（每区域一个保险库），换号、删号都在卡片内完成。
+每个区域拥有独立的本地凭据库（vault），支持添加、选择和删除多个账号。
 
 ### 方式 B：环境变量
 
-适合不想让令牌进 DSH 设置文件、或者希望由密钥管理器注入的场景：
+适用于通过环境变量或密钥管理器提供凭据的场景：
 
 ```bash
 # 国际版
@@ -70,7 +65,7 @@ export QODER_PERSONAL_ACCESS_TOKEN=pt-xxxxxxxx
 export QODERCN_PERSONAL_ACCESS_TOKEN=pt-xxxxxxxx
 ```
 
-放进 shell 配置（`~/.zshrc` 等）或系统的密钥管理工具（1Password / Bitwarden 等的 shell 插件），DSH 启动时会自动读取。
+可通过 shell 配置（如 `~/.zshrc`）或密钥管理工具（如 1Password / Bitwarden 的 shell 插件）注入环境变量，DSH 启动时读取。
 
 ### 优先级
 
@@ -78,7 +73,7 @@ export QODERCN_PERSONAL_ACCESS_TOKEN=pt-xxxxxxxx
 设置卡片的 PAT  >  环境变量 PAT  >  保险库（vault）账号
 ```
 
-三者按账号去重合并，不是互相覆盖。谁在生效可以用命令行看：
+三种来源按账号去重合并。以下命令可查看凭据来源与状态：
 
 ```bash
 dsh-connect-qoder status      # 各区域当前凭据来源与上游可达性
@@ -90,8 +85,8 @@ dsh-connect-qoder doctor      # PAT 是否就位、指纹派生、账号数（�
 **提交后报「验证失败」**
 令牌与区域不匹配（国内版的令牌不能用在国际版 tab），或复制时带上了空格/换行，或已过期。
 
-**「凭据被拒」但令牌明明是新生成的（实测记录）**
-2026-10 实测到一个值得记下来的现象：同一个 CN 令牌，
+**新令牌收到认证拒绝（实测记录）**
+2026-10 使用同一个 CN 令牌的实测结果如下：
 
 | 请求 | 结果 |
 | --- | --- |
@@ -100,28 +95,24 @@ dsh-connect-qoder doctor      # PAT 是否就位、指纹派生、账号数（�
 | `openapi.qoder.sh/sash/api/v2/me/usage` | 401 `TOKEN_EXPIRE` |
 | `gateway.qoder.com.cn/algo/api/v2/model/list` | 403 `Signature invalid` |
 
-两个结论：
+接口认证要求如下：
 
-1. **一张令牌有效与否，不能只看单一端点。** `sash` 系列接口回 `TOKEN_EXPIRE`
-   时，令牌本身可能完全正常——它只是不接受 PAT 直连（那条路径预期的是
-   浏览器会话 cookie：`qoder.com.cn/sash/...` 对缺 cookie 的请求回
-   `UNAUTHORIZED / missing cookie header`，与令牌无关）。
-2. **`gateway.*/algo/*` 必须走 COSY 签名**，裸 `Bearer` 一律 `Signature invalid`。
-   本插件正是走「PAT → jobToken → 签名会话」这条路，所以**聊天与模型列表不受
-   上面那条 401 影响**；受影响的只有用量/积分查询。
+1. `sash` 接口可能拒绝 PAT 直连并返回 `TOKEN_EXPIRE`；该结果仅说明当前请求未通过此端点认证。缺少浏览器 cookie 的 `qoder.com.cn/sash/...` 请求会返回 `UNAUTHORIZED / missing cookie header`。
+2. `gateway.*/algo/*` 要求 COSY 签名，直接发送 `Bearer PAT` 会返回 `Signature invalid`。插件通过 PAT 交换 jobToken，再建立签名会话。
 
-因此：卡片上积分显示「—」而对话能正常用，属于「积分端点读不到」，不等于
-「令牌坏了」。判断令牌真实状态应看对话能否发送，或按上表用 Cloud Agents 端点核对。
-（本插件现在的积分查询已改用 jobToken 的 `jt-` 令牌，实测 200；PAT 直连只作兜底。）
+积分显示“—”且聊天正常时，应检查用量查询端点。当前积分查询优先使用交换所得令牌，历史实测返回 200；PAT 直连保留为兼容回退。需要单独验证 PAT 时，可参照上表检查 Cloud Agents 端点。
 
-**模型列表是空的，但令牌看着没问题**
-未配置 PAT 的区域**不会列出任何模型**——一个请求都发不出去，列出来只会点到就失败。确认「从 Qoder 刷新」执行过。
+**模型列表为空**
 
-**不想用 PAT 了**
-把令牌在 Qoder 控制台里删掉即可；本插件侧用 `dsh-connect-qoder logout [--region cn|global]` 清除本地 vault 账号。
+确认对应区域已配置 PAT，并执行“从 Qoder 刷新”。插件仅展示具备凭据的区域模型。
 
-**能不能像 WorkBuddy 那样直接读本机登录？**
-不能。WorkBuddy 桌面端把登录态存在固定路径的明文/可解密文件里，插件可以直接扫描复用；Qoder 桌面端把凭据加密后存进系统钥匙串相关的封装文件，且 CLI 侧的 `.auth/user` 只有登录过 Qoder CLI 才会生成（大多数用户不会）。所以 Qoder 这边只有官方 PAT 这一条稳妥路径——所有第三方 Qoder 接入工具都是这么做的。
+**撤销 PAT 与清除本地账号**
+
+在 Qoder 控制台撤销令牌；使用 `dsh-connect-qoder logout [--region cn|global]` 清除本地 vault 账号。
+
+**桌面端登录凭据**
+
+本插件采用用户提供的 PAT。WorkBuddy 的凭据读取方式依赖其桌面端文件结构；Qoder 的本地凭据存储和 CLI 登录文件具有不同格式及生成条件，本插件未接入这些来源。
 
 ## 五、Qoder 每日签到（实测协议，2026-10）
 
@@ -130,7 +121,7 @@ dsh-connect-qoder doctor      # PAT 是否就位、指纹派生、账号数（�
 
 ### 协议（CN 实测通过）
 
-拉活动列表（**v1**，且叫 campaigns，不是 checkin）：
+查询活动列表（**v1**，路径为 `campaigns`）：
 
     GET {openapi}/sash/api/v1/me/campaigns?forceRefresh=true
     headers:
@@ -159,33 +150,30 @@ dsh-connect-qoder doctor      # PAT 是否就位、指纹派生、账号数（�
 
 ### 关键事实
 
-- 活动名里**没有**「签到」二字，所以照着 checkin / signin / reward 猜路径一律 404
-  （我实测猜了 13 个全 404）。真正的词是 **campaigns**（活动/权益）。
+- 签到使用 **campaigns**（活动/权益）接口；早期按 checkin / signin / reward 推测的 13 条路径均返回 404。
 - 状态机：`claimStatus` ∈ {CLAIMABLE, CLAIMED}；只有 `actionType === "CLAIM_BENEFIT"`
   且 `CLAIMABLE` 的才可领。
 - 官方刷新时间：**每天 10:00 (UTC+8)** 开窗（阿里云文档写 0 点，桌面端截图显示 10:00
   ——以桌面端为准）。
 - **国际版**还需要设备风控头 `Cosy-MachineToken` / `Cosy-MachineCode` /
-  `Cosy-MachineType`；**CN 不需要**（实测多发这些头在 CN 侧是噪音）。
-  三件套由 Qoder 客户端自带的 UMID 组件在本机生成，插件按区域读取：
+  `Cosy-MachineType`；**CN 无此要求**。
+  这三个字段由 Qoder 客户端自带的 UMID 组件在本机生成，插件按区域读取：
 
   | 区域 | 优先组件路径 |
   |---|---|
   | 国内版 | `/Applications/Qoder CN.app/Contents/Resources/umid/runtime-info` |
   | 国际版 | `/Applications/Qoder.app/Contents/Resources/umid/runtime-info` |
 
-  两侧都装了时各自优先自己那个 —— 设备身份与区域绑定，用错一侧会被风控拒绝。
-  组件不存在时签到**如实报错**（「未找到 Qoder 设备风控组件」），而不是把
-  「取不到设备身份」伪装成「今天没有活动」。也可用 `QODER_UMID_PATH` 显式指定。
+  同时安装两个区域的客户端时，优先读取对应区域组件；区域不匹配可能导致风控拒绝。
+  组件缺失时显示“未找到 Qoder 设备风控组件”；可使用 `QODER_UMID_PATH` 显式指定路径。
 
-  Windows 上按两层找：
+  Windows 按以下顺序查找：
 
-  1. `%LOCALAPPDATA%\Programs\Qoder[ CN]\resources\umid\runtime-info.exe` —— **默认**安装位置；
+  1. `%LOCALAPPDATA%\Programs\Qoder[ CN]\resources\umid\runtime-info.exe`：**默认**安装位置；
   2. **卸载登记表**（`HKCU\…\Uninstall` → `HKLM\…\Uninstall` → `HKLM\…\WOW6432Node\…`）里
      `DisplayName` 为 `Qoder` / `Qoder CN` 的项，从 `UninstallString`（或 `DisplayIcon`）
-     反推安装目录 —— 安装器允许改目录：装在别的盘（实测 `D:\…\Programs\Qoder`）时第一层
-     整族落空，只有第二层还知道它在哪儿。
+     解析安装目录。自定义安装位置（历史实测为 `D:\…\Programs\Qoder`）通过登记表定位。
 
-  `QODER_UMID_PATH` 的优先级在两层之上，且**不是唯一来源**：路径失效时会继续往下找。
-  读取结果按 50 分钟在进程内缓存（参考实现同量级），避免每次签到都 fork 进程。
+  `QODER_UMID_PATH` 的优先级在两层之上，路径失效时继续检查默认位置和登记表。
+  读取结果按 50 分钟在进程内缓存（参考实现同量级），减少组件进程启动次数。
 - 企业版账号不支持该活动（仅个人用户）。

@@ -1,29 +1,29 @@
 # 任务：给 WorkBuddy 账号池加「手动指定优先级」排序
 
-## 你在改什么
+## 修改目标
 
-本仓库是 DSH 插件 `@dmh2002/dsh-connect-workbuddy`，账号池（account pool）当前**只能按积分策略自动排序**，用户无法干预。请加一个手动排序功能：用户能给池成员排先后，请求优先发给排在前面且可用的账号。
+任务对象为 DSH 插件 `@dmh2002/dsh-connect-workbuddy`，账号池（account pool）当前**只能按积分策略自动排序**，用户无法干预。增加手动排序功能：用户能给池成员排先后，请求优先发给排在前面且可用的账号。
 
-同源项目 `dsh-connect-qoder` 已经做过同一件事，并且**上线通过**。下面的方案就是那份实现，已按 WorkBuddy 的实际代码校准过。照着做，但每一步都要在你自己的仓库里核对行号与签名——不要盲抄路径。
+同源项目 `dsh-connect-qoder` 已经做过同一件事，并已发布。下面的方案就是那份实现，已按 WorkBuddy 的实际代码校准过。实施前须按目标仓库源码核对路径、行号及函数签名。
 
-## 先读这几个文件
+## 相关文件
 
-- `src/account-pool.ts` — `rankPool`（约 409 行）与 `pickAccount`
-- `src/web-status.ts` — `buildPoolView`（`rankPool` 调用在约 811 行）
-- `src/index.ts` — `WorkBuddyPoolPreferences` 接口（约 357 行）、`poolConfig` schema（约 481 行）、三处 `rankPool` 调用（约 1495 / 1726 / 1751 行）
-- `src/status-paths.ts` — `nextRegionPool`（约 357 行）
-- `src/client/AccountPool.tsx` — 表格渲染（`pool.accounts.map` 在约 1119 行）、`renderAccountRow`（约 1229 行）、账号名单元格（约 1328 行）
-- `src/client/account-selection.ts` — `writePoolPreferences`（约 420 行起）
+- `src/account-pool.ts`：`rankPool`（约 409 行）与 `pickAccount`
+- `src/web-status.ts`：`buildPoolView`（`rankPool` 调用在约 811 行）
+- `src/index.ts`：`WorkBuddyPoolPreferences` 接口（约 357 行）、`poolConfig` schema（约 481 行）、三处 `rankPool` 调用（约 1495 / 1726 / 1751 行）
+- `src/status-paths.ts`：`nextRegionPool`（约 357 行）
+- `src/client/AccountPool.tsx`：表格渲染（`pool.accounts.map` 在约 1119 行）、`renderAccountRow`（约 1229 行）、账号名单元格（约 1328 行）
+- `src/client/account-selection.ts`：`writePoolPreferences`（约 420 行起）
 
-## 设计决策（这些是**结论**，不要重新讨论，除非你发现硬矛盾）
+## 设计要求
 
-### 1. 新配置键，不要复用 `memberAccountIds`
+### 1. 独立保存成员集合与手动顺序
 
-加 `orderAccountIds: string[]`。理由：`memberAccountIds` 回答「谁在池里」，`orderAccountIds` 回答「先用谁」。合成一个数组会让「取消勾选再勾回来」意外改变优先级，而配置里现有顺序只是勾选历史、不表达意图。
+新增 `orderAccountIds: string[]`。`memberAccountIds` 回答「谁在池里」，`orderAccountIds` 回答「先用谁」。合用一个数组会导致「取消勾选再勾回来」意外改变优先级，而配置里现有顺序只是勾选历史、不表达意图。
 
 空数组 = 完全按积分策略（改动前的行为，**默认不变**）。
 
-同时要动三处：
+同步修改三处：
 
 - `WorkBuddyPoolPreferences` 接口加 `orderAccountIds?: readonly string[]`
 - `poolConfig` schema 加 `orderAccountIds: z.array(z.string()).default([])`
@@ -40,9 +40,9 @@ for (const [index, id] of (orderAccountIds ?? []).entries()) {
 }
 ```
 
-每行加 `_order: order.get(member.account.id) ?? Number.POSITIVE_INFINITY`。
+每行增加 `_order: order.get(member.account.id) ?? Number.POSITIVE_INFINITY`。
 
-`sort` 比较器里，把它插在**临期判定之后、到期时刻之前**：
+`sort` 比较器里，将其插入**临期判定之后、到期时刻之前**：
 
 ```ts
 if (left._usable !== right._usable) return left._usable ? -1 : 1
@@ -51,30 +51,30 @@ if (left._order !== right._order) return left._order - right._order  // 新增
 if (left._atRisk && right._atRisk && left._expiring !== right._expiring) { ... }
 ```
 
-### 3. 临期积分压过用户顺序 —— 这是**刻意**的，不是 bug
+### 3. 优先使用临期积分，其次采用用户顺序
 
-`rankPool` 的注释里写了 issue #70 的来龙去脉（临期积分必须优先花，否则白烧）。用户一次误排若能导致当天要作废的分没花掉，代价远大于排序的便利。所以 `_atRisk` 保持压过 `_order`。
+`rankPool` 的注释里写了 issue #70 的来龙去脉（临期积分必须优先花，否则到期作废）。用户一次误排若能导致当天要作废的分没花掉，代价远大于排序的便利。所以 `_atRisk` 保持压过 `_order`。
 
-**必须写一个测试钉住它**，测试名建议：
+**必须写一个测试验证它**，测试名建议：
 
 ```
 expiring credits still outrank the manual order (issue #70 wins)
 ```
 
-让这个决定对后来的人是可见的，而不是被当成 bug「修掉」。在 `rankPool` 的 doc comment 里也写明这一点。
+测试和注释须保留该排序依据，供后续维护核查。在 `rankPool` 的 doc comment 里也写明这一点。
 
-### 4. 表格行序必须按 `orderIds` 渲染 —— 这是「即时」的前提
+### 4. 按 `orderIds` 即时渲染表格行序
 
-`src/client/AccountPool.tsx` 现在直接 `...pool.accounts.map(account => renderAccountRow(...))`，行序就是宿主下发顺序。**这一处不改，点上下移按钮后行不会动，必须等保存 + 宿主重算才生效**——用户会认为功能坏了。
+`src/client/AccountPool.tsx` 现在直接 `...pool.accounts.map(account => renderAccountRow(...))`，行序就是DSH下发顺序。**这一处不改，点上下移按钮后行不会动，必须等保存 + DSH重算才生效**。
 
-加一个纯函数（放在 `AccountPool.tsx` 底部或同目录一个模块里）：
+增加一个纯函数（放在 `AccountPool.tsx` 底部或同目录一个模块里）：
 
 ```ts
 /**
  * 按 orderIds 重排账号行。
  *
- * 不在名单里的（非成员、或还没排过的）保持宿主给的相对顺序接在末尾：
- * 稳定排序保证同样输入永远得到同样行序，否则表格会在每次快照回流时无声抖动。
+ * 不在名单里的（非成员、或还没排过的）保持DSH给的相对顺序接在末尾：
+ * 稳定排序保证同样输入永远得到同样行序，否则表格会在每次快照回传时无声抖动。
  */
 function sortAccountsByOrder(
   accounts: readonly WorkBuddyWebPoolAccount[],
@@ -107,17 +107,17 @@ const orderIds: string[] = (() => {
 const orderIsManual = active.orderAccountIds.some(id => active.memberAccountIds.includes(id))
 ```
 
-未排过序的成员按池表原顺序接在尾部——与 `rankPool` 的「没排过 = 排到最后」是同一条约定，否则卡片上的名次会和实际选中顺序打架。
+未排序成员按池表原顺序排列在已排序成员之后，使卡片显示与 `rankPool` 的实际选择顺序保持一致。
 
-### 6. 名次徽章：没排过就说「自动排序」，**绝不伪造名次**
+### 6. 区分自动排序与手动名次
 
 在账号名单元格（`renderAccountRow` 里 `h('b', null, name)` 之后）插入：
 
 - `checked === false`（非成员）→ 不渲染徽章，非成员不参与排名
-- `orderIsManual` → 实心品牌色徽章 `第 N 位`，`title` 说明「这个顺序是你手动排的」
-- 否则 → 虚线灰框徽章 `自动排序`，`title` 说明「还没有手动排序：池会先花临期积分，再按余额多寡选号。用 ↑/↓ 自己指定顺序」
+- `orderIsManual` → 实心品牌色徽章 `第 N 位`，`title` 说明「用户已指定手动顺序」
+- 否则 → 虚线灰框徽章 `自动排序`，`title` 说明「还没有手动排序：池会先花临期积分，再按余额多寡选号。可使用 ↑/↓ 指定顺序」
 
-**这一条是不能省的安全条款**：如果对着一个由积分策略决定的顺序显示「第 1 位」「第 2 位」，用户会以为这是自己的选择，而它每次刷新都在变。比不显示更糟。
+**展示要求**：如果对着一个由积分策略决定的顺序显示「第 1 位」「第 2 位」，用户会以为这是自己的选择，而它每次刷新都在变。容易造成误解。
 
 ### 7. ↑/↓ 按钮
 
@@ -125,9 +125,9 @@ const orderIsManual = active.orderAccountIds.some(id => active.memberAccountIds.
 
 可见条件：`pool.enabled === true && checked && canEdit`。
 
-池关着时不给——没有「先发谁」这回事，给按钮等于给一个不起作用的控件。
+顺序调整仅在账号池启用时参与账号选择，因此账号池关闭时隐藏对应按钮。
 
-首尾各自**禁用**而不是隐藏：隐藏会让按钮在行与行之间跳位，点起来要看两次。
+首尾按钮在无法移动时保持可见并禁用：隐藏会让按钮在行与行之间跳位，增加操作定位成本。
 
 移动函数：
 
@@ -144,11 +144,11 @@ const moveMember = (accountId: string, delta: -1 | 1) => {
 }
 ```
 
-**第一次点 ↑/↓ 就把当前可见顺序整个落下来**，从此由用户决定。这正是「用户开始手动排序」的那个点。
+**第一次点 ↑/↓ 就把当前可见顺序完整写入草稿**，从此由用户决定。该次操作建立显式手动顺序。
 
 ### 8. 保存校验必须**逐位**比对
 
-`writePoolPreferences` 现在的成员校验是**按集合**比（源码注释明确写了「the stored order is not meaningful」，这个判断我理解，它对成员资格仍然成立）。但 `orderAccountIds` 是**顺序敏感的**：只比集合会把「拖了但没生效」当成保存成功，而成功会丢弃草稿，用户看到的就是「我排了，但没保存」。
+`writePoolPreferences` 现在的成员校验是**按集合**比（源码注释明确写了「the stored order is not meaningful」，该判断适用于成员资格校验）。但 `orderAccountIds` 是**顺序敏感的**：仅比较集合无法验证顺序写入；误判成功后会丢弃草稿，导致排序修改丢失。
 
 ```ts
 const storedOrder = pool['orderAccountIds']
@@ -158,7 +158,7 @@ return storedOrder.every((id, index) => id === orderAccountIds[index])
 
 注意 `orderAccountIds` 缺省时要写 `[]` 而不是 `undefined`，因为要参与逐位比对。
 
-### 9. 宿主下发时清洗残渣
+### 9. DSH返回前过滤失效账号
 
 `buildPoolView` 里透传 `orderAccountIds` 前，只保留**当前确实存在的账号 id**：
 
@@ -166,29 +166,29 @@ return storedOrder.every((id, index) => id === orderAccountIds[index])
 ...(orderedIds.length === 0 ? {} : { orderAccountIds: orderedIds }),
 ```
 
-配置里的 `orderAccountIds` 在删除账号后不会自动收缩（与 `memberAccountIds` 同一个残渣问题），原样透传会让卡片把名次算在一个已经不存在的行上。
+配置里的 `orderAccountIds` 在删除账号后不会自动收缩（与 `memberAccountIds` 同一个残留配置问题），原样透传会让卡片把名次算在一个已经不存在的行上。
 
-`QoderPoolDeps` 的对应物——WorkBuddy 是 `web-status.ts` 里 `pool.preferences` 的类型——要加 `orderAccountIds?: readonly string[]`。`WorkBuddyWebPool` 类型定义在 `status-paths.ts`（约 983 行 `memberAccountIds` 附近），也在那里加。
+在 `web-status.ts` 中为 `pool.preferences` 的类型增加 `orderAccountIds?: readonly string[]`，对应 Qoder 的 `QoderPoolDeps` 修改。`WorkBuddyWebPool` 类型定义在 `status-paths.ts`（约 983 行 `memberAccountIds` 附近），也在那里加。
 
 ### 10. 传递到所有 `rankPool` 调用点
 
-`src/index.ts` 有三处 `rankPool(...)`（约 1495 / 1726 / 1751 行），`src/web-status.ts` 一处（约 811 行）。**全部**要传 `prefs.orderAccountIds`，否则排序只在一半路径生效——这是最容易漏的地方。
+`src/index.ts` 有三处 `rankPool(...)`（约 1495 / 1726 / 1751 行），`src/web-status.ts` 一处（约 811 行）。**全部**要传 `prefs.orderAccountIds`，确保全部调用路径采用相同排序规则。
 
 同时检查 `updateMembership` 之类重建 preferences 对象的地方：WorkBuddy 里如果有 `{ ...poolPreferencesOf(...), memberAccountIds }` 这种写法要注意，展开能保住新字段；如果是**手写字段列表**的，必须补上 `orderAccountIds`，否则保存成员会清掉排序。
 
-## 必写的测试
+## 测试要求
 
 `tests/` 下已有 `account-pool.spec.ts` 与渲染测试，沿用现有的 `member(...)` 等 helper。
 
 **`rankPool` 层**（每条都要有）：
 
-1. 不传 order → 回落积分策略（防回归）
-2. 传 order → 压过积分策略（余额最少的号排第一也能赢）
+1. 省略 order 时，按积分策略排序（回归测试）
+2. 传 order → 优先于积分策略（即使余额最少，手动排在首位的账号仍优先）
 3. 不在 order 里的成员排到所有显式排过的之后
 4. 出池账号不能被排到可用账号前面
 5. **临期积分仍压过手动顺序**（issue #70 那条）
 6. order 里有不存在的 id → 忽略，真实成员不被挤下去
-7. order 里重复 id → 首次出现的位置生效，名次不漂移
+7. order 里重复 id → 首次出现的位置生效，排序结果稳定
 8. order 里也有分数/余额都相等的两个号 → 结果稳定（不随输入数组顺序变化）
 
 **渲染层**：
@@ -201,21 +201,21 @@ return storedOrder.every((id, index) => id === orderAccountIds[index])
 
 ## 验收标准
 
-在仓库根目录跑：
+在目标仓库根目录执行：
 
 ```
 npx tsc -p tsconfig.json && npx tsc -p tsconfig.client.json && npx vitest run && npx tsdown
 ```
 
-四项全绿，且**已有测试一个都不能改坏**。如果为了新功能必须改既有测试，在回复里逐条说明为什么那是正当的，不要静默修改断言。
+四项全部通过，且**已有测试须保持有效**。如果为了新功能必须改既有测试，在回复里逐条说明为什么那是正当的，不要静默修改断言。
 
-## 交付时告诉我
+## 交付核对
 
 1. 实际改了哪些文件（列路径）
 2. 新增测试的名单
 3. `rankPool` 最终的比较器顺序（贴代码）
-4. 有没有遇到我上面没预见的硬矛盾，以及你怎么处理的
+4. 实施中发现的设计冲突及处理结果
 
-## 一条提醒
+## 测试定位要求
 
-先跑一遍 `npx vitest run` 建立基线，记下改动前有多少个测试通过。WorkBuddy 的渲染测试用 `h()` 而非 JSX，按索引取 DOM 节点的断言不少——插入新元素后若测试失败，优先怀疑是索引位移，而不是功能错了，**但要先确认那个断言测的到底是什么**，不要盲目改数字。
+先执行一次 `npx vitest run` 建立基线，记下改动前有多少个测试通过。WorkBuddy 的渲染测试使用 `h()` 构建元素，部分断言通过索引定位 DOM 节点，因此插入新元素后须先核对失败断言的目标与节点位置，再调整受影响的定位方式。
